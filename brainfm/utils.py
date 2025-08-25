@@ -1,6 +1,7 @@
 import os
 import yaml
 import json
+import torch
 
 
 def set_seed(seed: int) -> None:
@@ -20,6 +21,9 @@ def load_config(path: str) -> dict:
 
 def get_logger(log_dir: str, experiment_name: str):
     pass
+
+def get_device(device_str: str):
+    return torch.device(device_str if torch.cuda.is_available() else "cpu")
 
 def validate_config_path(path: str) -> None:
     if not (path.endswith('.yaml') or path.endswith('.yml') or path.endswith('.json')):

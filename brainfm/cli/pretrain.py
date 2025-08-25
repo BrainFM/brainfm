@@ -9,7 +9,8 @@ from brainfm.utils  import (
     set_seed,
     load_config,
     get_logger,
-    validate_config_path
+    validate_config_path,
+    get_device
 )
 
 
@@ -46,7 +47,7 @@ def main() -> None:
     validate_config_path(args.cfg)
     config = load_config(path=args.cfg)
 
-    
+    device = get_device(args.device)
 
     # logger = get_logger(
     #     log_dir=config.path.log_dir,

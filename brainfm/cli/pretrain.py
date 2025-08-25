@@ -3,7 +3,7 @@ import argparse
 from brainfm.data import build_loader
 from brainfm.models import build_model
 from brainfm.optim import build_optimizer
-# from brainfm.scheduler import build_scheduler
+from brainfm.scheduler import build_scheduler
 # from brainfm.trainer import train
 from brainfm.utils  import (
     set_seed,
@@ -64,12 +64,11 @@ def main() -> None:
         logger=logger,
     )
 
-
-    # lr_scheduler = build_scheduler(
-    #     optimizer=optimizer,
-    #     config=config,
-    #     logger=logger
-    # )
+    lr_scheduler = build_scheduler(
+        optimizer=optimizer,
+        config=config,
+        logger=logger
+    )
 
     # train(
     #     model=model,

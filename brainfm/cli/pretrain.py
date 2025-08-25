@@ -7,9 +7,8 @@ from brainfm.scheduler import build_scheduler
 from brainfm.trainer import train
 from brainfm.utils  import (
     set_seed,
-    load_config,
+    get_config,
     get_logger,
-    validate_config_path,
     get_device
 )
 
@@ -18,18 +17,11 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train BrainFM"
     )
-
     parser.add_argument(
         "--cfg",
         type=str,
+        required=True,
         help="Path to configuration file. Supports .yaml, .yml, or .json formats.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        help="Device to use for training (e.g., 'cpu', 'cuda:0').",
-        dest="device"
     )
     parser.add_argument(
         "--experiment_name",        
@@ -37,18 +29,13 @@ def parse_arguments() -> argparse.Namespace:
         default="pretrain_brainfm",
         help="Name of the experiment for logger.",
     )
-
     return parser.parse_args()
-
 
 def main() -> None:
     args   = parse_arguments()
-
-    validate_config_path(args.cfg)
-    config = load_config(path=args.cfg)
-
-    device = get_device(args.device)
-
+    config = get_config(path=args.cfg)
+    device = get_device(device_str=config.train.device)
+    print(f"Using device: {device}")
     # logger = get_logger(
     #     log_dir=config.path.log_dir,
     #     experiment_name=args.experiment_name

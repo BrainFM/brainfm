@@ -298,7 +298,9 @@ def train(model: torch.nn.Module,
         # --- Save Checkpoint ---
         save_freq = config.train.save_freq
         if save_freq > 0 and (epoch + 1) % save_freq == 0:
-            checkpoint_path = os.path.join(config.paths.ckpt_dir, f"checkpoint_{epoch}.pth")
+            ckpt_dir = config.paths.ckpt_dir
+            os.makedirs(ckpt_dir, exist_ok=True)
+            checkpoint_path = os.path.join(ckpt_dir, f"checkpoint_{epoch}.pth")
             save_checkpoint(
                 model=model,
                 optimizer=optimizer,

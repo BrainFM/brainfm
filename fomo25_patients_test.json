@@ -1,0 +1,12 @@
+{
+    "sub10000ses1": {
+        "flair": "/Users/khueluu/Documents/Projects/brainfm-core/data/sub10000ses1_flair.npy",
+        "t1": "/Users/khueluu/Documents/Projects/brainfm-core/data/sub10000ses1_t1.npy",
+        "t2": "/Users/khueluu/Documents/Projects/brainfm-core/data/sub10000ses1_t2.npy"
+    },
+    "sub10001ses1": {
+        "flair": "/Users/khueluu/Documents/Projects/brainfm-core/data/sub10001ses1_flair.npy",
+        "t1": "/Users/khueluu/Documents/Projects/brainfm-core/data/sub10001ses1_t1.npy",
+        "t2": "/Users/khueluu/Documents/Projects/brainfm-core/data/sub10001ses1_t2.npy"
+    }
+}

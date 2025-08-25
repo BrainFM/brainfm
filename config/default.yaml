@@ -5,12 +5,15 @@ paths:
   ckpt_dir: "./checkpoint"
   log_dir: "./logs"
   splits_file: "./splits.json"
+  mapping_file: "./fomo25_patients_test.json"
 
 data:
-  img_size: [128, 128, 128]  
+  img_size: [128, 128, 128]
+  patch_size: [16, 16, 16]  
   batch_size: 2
   num_workers: 4
   pin_memory: true
+  modality_encoder_model: "dmis-lab/biobert-v1.1"
 
 model:
   name: "mae_vit3d_base"

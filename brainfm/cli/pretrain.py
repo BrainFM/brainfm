@@ -1,6 +1,6 @@
 import argparse
 
-# from brainfm.data import build_loader
+from brainfm.data import build_loader
 # from brainfm.models import build_model
 # from brainfm.optim import build_optimizer
 # from brainfm.scheduler import build_scheduler
@@ -44,10 +44,10 @@ def main() -> None:
     set_seed(config.train.seed)
     logger.info(f"Set random seed to: {config.train.seed}")
 
-    # dataloader = build_loader(
-    #     config=config,
-    #     logger=logger
-    # )
+    dataloader = build_loader(
+        config=config,
+        logger=logger
+    )
     # model = build_model(
     #     config=config,
     #     logger=logger

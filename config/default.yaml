@@ -22,6 +22,13 @@ model:
   spatial_dims: 3
   mask_ratio: 0.6
 
+optimizer:
+  type: "adamw"
+  lr: 1.0e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
 train:
   epochs: 50
   optimizer: {name: "adamw", lr: 1.0e-4, weight_decay: 0.05}

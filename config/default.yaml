@@ -20,7 +20,7 @@ model:
   mask_ratio: 0.6
 
 train:
-  num_epochs: 50
+  epochs: 50
   optimizer: {name: "adamw", lr: 1.0e-4, weight_decay: 0.05}
   scheduler: {name: "cosine", warmup_epochs: 20}
   seed: 42

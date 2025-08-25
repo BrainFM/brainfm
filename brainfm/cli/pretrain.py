@@ -9,7 +9,7 @@ from brainfm.utils  import (
     set_seed,
     load_config,
     get_logger,
-    validte_config_path
+    validate_config_path
 )
 
 
@@ -43,13 +43,16 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args   = parse_arguments()
 
-    validte_config_path(args.cfg)
+    validate_config_path(args.cfg)
     config = load_config(path=args.cfg)
+
+    
 
     # logger = get_logger(
     #     log_dir=config.path.log_dir,
     #     experiment_name=args.experiment_name
     # )
+
     # set_seed(config.seed)
 
     # dataloader = build_loader(

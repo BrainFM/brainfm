@@ -21,7 +21,7 @@ def load_config(path: str) -> dict:
 def get_logger(log_dir: str, experiment_name: str):
     pass
 
-def validte_config_path(path: str) -> None:
+def validate_config_path(path: str) -> None:
     if not (path.endswith('.yaml') or path.endswith('.yml') or path.endswith('.json')):
         raise ValueError("Configuration file must be .yaml, .yml, or .json format.")
     if not os.path.exists(path):

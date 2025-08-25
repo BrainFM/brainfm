@@ -309,8 +309,6 @@ def train(model: torch.nn.Module,
             )
             if logger: logger.info(f"Checkpoint saved at {checkpoint_path}")
 
-        print("Breaking after epoch 1 for testing purposes")
-        break
 
     # --- Log Total Training Time ---
     total_time = time.time() - start_time

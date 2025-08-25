@@ -1,8 +1,7 @@
 import copy
 import os
-import yaml
-import json
 from types import SimpleNamespace
+from .helper import load_json, load_yaml
 
 class Config(SimpleNamespace):
     """Dot-access wrapper around a dict, with .raw for the original dict."""
@@ -15,27 +14,20 @@ class Config(SimpleNamespace):
 
     def to_dict(self):
         return copy.deepcopy(self.raw)
-
-def validate_config_path(path: str) -> None:
-    if not (path.endswith('.yaml') or path.endswith('.yml') or path.endswith('.json')):
-        raise ValueError("Configuration file must be .yaml, .yml, or .json format.")
+  
+def get_config(path: str) -> dict:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Configuration file {path} does not exist.")
     
-def load_config(path: str) -> dict:
-    d = None
+    config_dict = None
     
     if path.endswith('.yaml') or path.endswith('.yml'):
-        with open(path, 'r') as f:
-            d = yaml.safe_load(f)
+        config_dict = load_yaml(path)
     elif path.endswith('.json'):
-        with open(path, 'r') as f:
-            d = json.load(f)
+        config_dict = load_json(path)
+    else:
+        raise ValueError("Configuration file must be .yaml, .yml, or .json format.")
 
-    if not isinstance(d, dict):
+    if not isinstance(config_dict, dict):
         raise ValueError("Cannot load config file into a dictionary. Check the file format.")
-    return Config(d)
-
-def get_config(path: str) -> Config:
-    validate_config_path(path)
-    return load_config(path)
+    return Config(config_dict)

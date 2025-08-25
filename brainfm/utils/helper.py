@@ -1,5 +1,7 @@
 import os
 import random
+import json
+import yaml
 import numpy as np
 import torch
 
@@ -24,3 +26,23 @@ def set_seed(seed: int, reproduce: bool = False) -> None:
    
 def get_device(device_str: str):
     return torch.device(device_str if torch.cuda.is_available() else "cpu")
+
+def to_3tuple(x):
+    if isinstance(x, (tuple, list)):
+        assert len(x) == 3, "Must be a single value or a tuple of 3 values"
+        return x
+    return (x, x, x)
+
+def load_json(path: str):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"JSON file {path} does not exist.")
+    with open(path, 'r') as f:
+        data = json.load(f)
+    return data
+
+def load_yaml(path: str):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"YAML file {path} does not exist.")
+    with open(path, 'r') as f:
+        data = yaml.safe_load(f)
+    return data

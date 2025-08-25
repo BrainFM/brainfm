@@ -1,33 +1,39 @@
 import argparse
-from brainfm.utils  import set_seed, load_config, get_logger
+
 from brainfm.data import build_loader
 from brainfm.models import build_model
 from brainfm.optim import build_optimizer
 from brainfm.scheduler import build_scheduler
 from brainfm.trainer import train
+from brainfm.utils  import (
+    set_seed,
+    load_config,
+    get_logger,
+    validte_config_path
+)
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Pre-train the BrainFM model"
+        description="Train BrainFM"
     )
 
     parser.add_argument(
         "--cfg",
         type=str,
-        default="configs/pretrain.yaml",
-        help="Path to configuration file.",
+        help="Path to configuration file. Supports .yaml, .yml, or .json formats.",
     )
     parser.add_argument(
-        "--use_gpu",
-        action="store_true",
-        help="Flag to use GPU for training.",
-        dest="use_gpu"
+        "--device",
+        type=str,
+        default="cpu",
+        help="Device to use for training (e.g., 'cpu', 'cuda:0').",
+        dest="device"
     )
     parser.add_argument(
         "--experiment_name",        
         type=str,
-        default="pretrain_modis",
+        default="pretrain_brainfm",
         help="Name of the experiment for logger.",
     )
 
@@ -35,17 +41,16 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> None:
-    print("Pretraining script is not yet implemented.")
-    # args   = parse_arguments()
-    # config = load_config(path=args.cfg)
-    # # Update config with parsed args
-    # config.USE_GPU = args.use_gpu
+    args   = parse_arguments()
+
+    validte_config_path(args.cfg)
+    config = load_config(path=args.cfg)
 
     # logger = get_logger(
-    #     log_dir=config.DIR.LOG,
+    #     log_dir=config.path.log_dir,
     #     experiment_name=args.experiment_name
     # )
-    # set_seed(getattr(config, "SEED", 42))
+    # set_seed(config.seed)
 
     # dataloader = build_loader(
     #     config=config,

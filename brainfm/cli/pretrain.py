@@ -41,7 +41,8 @@ def main() -> None:
     device = get_device(device_str=config.train.device)
     logger.info(f"Using device: {device}")
 
-    # set_seed(config.seed)
+    set_seed(config.train.seed)
+    logger.info(f"Set random seed to: {config.train.seed}")
 
     # dataloader = build_loader(
     #     config=config,

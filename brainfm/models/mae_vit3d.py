@@ -374,7 +374,7 @@ def build_model(config, device: torch.device, logger=None):
     model.to(device)
 
     # Load resume checkpoint if specified
-    ckpt_path = config.train.resume_checkpoint_path
+    ckpt_path = config.paths.resume_checkpoint_path
     if ckpt_path and os.path.isfile(ckpt_path):
         checkpoint = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])

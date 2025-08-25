@@ -4,7 +4,7 @@ from brainfm.data import build_loader
 from brainfm.models import build_model
 from brainfm.optim import build_optimizer
 from brainfm.scheduler import build_scheduler
-# from brainfm.trainer import train
+from brainfm.trainer import train
 from brainfm.utils  import (
     set_seed,
     get_config,
@@ -70,15 +70,15 @@ def main() -> None:
         logger=logger
     )
 
-    # train(
-    #     model=model,
-    #     dataloader=dataloader,
-    #     optimizer=optimizer,
-    #     lr_scheduler=lr_scheduler,
-    #     config=config,
-    #     logger=logger,
-    #     device=deivce,
-    # )
+    train(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        config=config,
+        logger=logger,
+        device=device,
+    )
 
 
 if __name__ == "__main__":

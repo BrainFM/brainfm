@@ -6,6 +6,7 @@ paths:
   log_dir: "./logs"
   splits_file: "./splits.json"
   mapping_file: "./fomo25_patients_test.json"
+  resume_checkpoint_path: null # Path to checkpoint to resume training from
 
 data:
   img_size: [128, 128, 128]
@@ -41,11 +42,9 @@ scheduler:
 
 train:
   epochs: 50
-  optimizer: {name: "adamw", lr: 1.0e-4, weight_decay: 0.05}
-  scheduler: {name: "cosine", warmup_epochs: 20}
   seed: 42
   device: "cpu" # Change to "cuda" if GPU is available
-  log_every_steps: 100
-  save_every_epochs: 5
+  log_freq: 100
+  save_freq: 5
+  clip_grad_norm: 1.0
   fold: 0
-  resume_checkpoint_path: null # Path to checkpoint to resume training from

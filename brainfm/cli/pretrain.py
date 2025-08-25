@@ -1,7 +1,7 @@
 import argparse
 
 from brainfm.data import build_loader
-# from brainfm.models import build_model
+from brainfm.models import build_model
 # from brainfm.optim import build_optimizer
 # from brainfm.scheduler import build_scheduler
 # from brainfm.trainer import train
@@ -50,10 +50,14 @@ def main() -> None:
     )
     logger.info(f"Built DataLoader with {len(dataloader)} batches.")
     
-    # model = build_model(
-    #     config=config,
-    #     logger=logger
-    # )
+    model = build_model(
+        config=config,
+        device=device,
+        logger=logger
+    )
+    logger.info("Built model:")
+    logger.info(model)
+
     # optimizer = build_optimizer(
     #     model=model,
     #     config=config,
@@ -72,6 +76,7 @@ def main() -> None:
     #     lr_scheduler=lr_scheduler,
     #     config=config,
     #     logger=logger,
+    #     device=deivce,
     # )
 
 

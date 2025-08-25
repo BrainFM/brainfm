@@ -46,3 +46,6 @@ def load_yaml(path: str):
     with open(path, 'r') as f:
         data = yaml.safe_load(f)
     return data
+
+def count_parameters(model: torch.nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)

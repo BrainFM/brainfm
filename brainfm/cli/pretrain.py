@@ -34,12 +34,12 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args   = parse_arguments()
     config = get_config(path=args.cfg)
+    logger = get_logger(
+        log_dir=config.paths.log_dir,
+        experiment_name=args.experiment_name
+    )
     device = get_device(device_str=config.train.device)
-    print(f"Using device: {device}")
-    # logger = get_logger(
-    #     log_dir=config.path.log_dir,
-    #     experiment_name=args.experiment_name
-    # )
+    logger.info(f"Using device: {device}")
 
     # set_seed(config.seed)
 

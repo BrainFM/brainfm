@@ -7,3 +7,4 @@ monai
 timm
 einops
 accelerate
+transformers

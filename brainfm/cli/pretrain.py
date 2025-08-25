@@ -48,6 +48,8 @@ def main() -> None:
         config=config,
         logger=logger
     )
+    logger.info(f"Built DataLoader with {len(dataloader)} batches.")
+    
     # model = build_model(
     #     config=config,
     #     logger=logger

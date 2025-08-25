@@ -46,22 +46,22 @@ def build_loader(config: Config, logger=None) -> DataLoader:
         patch_size=config.data.patch_size
     )
 
-    # # Create DataLoader
-    # data_loader = DataLoader(
-    #     dataset,
-    #     batch_size=config.DATA.BATCH_SIZE,
-    #     shuffle=True,
-    #     collate_fn=mri_collate_fn,
-    #     pin_memory=config.DATA.PIN_MEMORY,
-    #     num_workers=config.DATA.NUM_WORKERS,
-    # )
+    # Create DataLoader
+    data_loader = DataLoader(
+        dataset,
+        batch_size=config.data.batch_size,
+        collate_fn=mri_collate_fn,
+        pin_memory=config.data.pin_memory,
+        num_workers=config.data.num_workers,
+        shuffle=True,
+    )
 
-    # # Log dataset size
-    # if logger:
-    #     sample = next(iter(data_loader))
-    #     logger.info(f"[Sample Shapes] patches (B, TotalPatches, PatchDim): {tuple(sample['patches'].shape)}, "
-    #                 f"modality_embeddings (B, TotalPatches, ModEmbDim): {tuple(sample['modality_embeddings'].shape)}, "
-    #                 f"position_indices (B, TotalPatches, 3): {tuple(sample['position_indices'].shape)}, "
-    #                 f"attention_mask (B, TotalPatches): {tuple(sample['attention_mask'].shape)}")
+    # Log dataset size
+    if logger:
+        sample = next(iter(data_loader))
+        logger.info(f"[Sample Shapes] patches (B, TotalPatches, PatchDim): {tuple(sample['patches'].shape)}, "
+                    f"modality_embeddings (B, TotalPatches, ModEmbDim): {tuple(sample['modality_embeddings'].shape)}, "
+                    f"position_indices (B, TotalPatches, 3): {tuple(sample['position_indices'].shape)}, "
+                    f"attention_mask (B, TotalPatches): {tuple(sample['attention_mask'].shape)}")
 
-    # return data_loader
+    return data_loader

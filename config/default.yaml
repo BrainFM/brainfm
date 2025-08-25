@@ -12,7 +12,7 @@ data:
   patch_size: [16, 16, 16]  
   batch_size: 2
   num_workers: 4
-  pin_memory: true
+  pin_memory: false
   modality_encoder_model: "dmis-lab/biobert-v1.1"
 
 model:

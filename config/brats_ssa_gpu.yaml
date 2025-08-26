@@ -1,10 +1,8 @@
 stage: pretrain
 
 paths:
-  data_dir: "./data"
   ckpt_dir: "./checkpoint"
   log_dir: "./logs"
-  splits_file: "./splits.json"
   mapping_file: "./brats-ssa.json"
   resume_checkpoint_path: null # Path to checkpoint to resume training from
 

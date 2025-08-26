@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-# --- Positional Embedding ---
 class LearnablePositionalEmbedding3D(nn.Module):
     def __init__(self, max_patches_d, max_patches_h, max_patches_w, embed_dim):
         """
@@ -71,7 +70,6 @@ class LearnablePositionalEmbedding3D(nn.Module):
         return output_embed
 
 
-# --- Conditional Layer Normalization ---
 class ConditionalLayerNorm(nn.Module):
     def __init__(self, normalized_shape, cond_dim, eps=1e-5):
         super().__init__()

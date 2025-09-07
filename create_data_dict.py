@@ -4,26 +4,6 @@ def create_data_dict_for_brats(local_dir, remote_dir, output_csv):
     data_dict = {}
     subjects = os.listdir(local_dir)
     session = "1"
-
-    for subject in subjects:
-        if subject == ".DS_Store": continue
-        subject_id = f"{subject}/{session}"
-        data_dict[subject_id] = {}
-        subject_dir = os.path.join(local_dir, subject)
-        fns = os.listdir(subject_dir)
-        for fn in fns:
-            modality = fn.split("-")[-1].replace(".nii.gz", "")
-            if modality == "seg": continue
-            fp = os.path.join(remote_dir, subject, fn)
-            data_dict[subject_id][modality] = fp
-
-    with open(output_csv, "w") as f:
-        json.dump(data_dict, f, indent=4)
-
-def create_data_dict_for_brats(local_dir, remote_dir, output_csv):
-    data_dict = {}
-    subjects = os.listdir(local_dir)
-    session = "1"
     dataset_name = "BraTS-SSA"
 
     for subject in subjects:
@@ -51,4 +31,4 @@ if __name__ == "__main__":
         remote_dir=remote_dir,
         output_csv=output_csv
     )
-    # MSLesSeg
+    # FOMO

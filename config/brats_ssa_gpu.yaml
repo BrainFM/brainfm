@@ -1,15 +1,17 @@
 stage: pretrain
 
 paths:
+  data_dir: "./data"
   ckpt_dir: "./checkpoint"
   log_dir: "./logs"
+  splits_file: "./splits.json"
   mapping_file: "./brats-ssa.json"
   resume_checkpoint_path: null # Path to checkpoint to resume training from
 
 data:
   img_size: [128, 128, 128]
   patch_size: [16, 16, 16]  
-  batch_size: 2
+  batch_size: 8
   num_workers: 4
   pin_memory: false
   modality_encoder_model: "dmis-lab/biobert-v1.1"
@@ -39,10 +41,10 @@ scheduler:
   gamma: 0.5
 
 train:
-  epochs: 50
+  epochs: 100
   seed: 42
   device: "cuda" # Change to "cuda" if GPU is available
   log_freq: 100
-  save_freq: 5
+  save_freq: 10
   clip_grad_norm: 1.0
   fold: 0

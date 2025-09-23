@@ -21,13 +21,13 @@ def mri_collate_fn(batch):
     # Different libraries use different conventions; PyTorch expects True at padded positions.
     lengths = torch.tensor([len(p) for p in patches_list])
     max_len = padded_patches.shape[1]
-    attention_mask = torch.arange(max_len)[None, :] >= lengths[:, None] # (B, TotalPatches), True where padded
+    pad_mask = torch.arange(max_len)[None, :] >= lengths[:, None] # (B, TotalPatches), True where padded
 
     return {
         "patches": padded_patches,
         "modality_embeddings": padded_mod_embs,
         "position_indices": padded_pos_idxs,
-        "attention_mask": attention_mask,
+        "pad_mask": pad_mask,
     }
 
 def build_loader(config: Config, logger=None) -> DataLoader: 
@@ -61,7 +61,7 @@ def build_loader(config: Config, logger=None) -> DataLoader:
         logger.info(f"[Sample Shapes] patches (B, TotalPatches, PatchDim): {tuple(sample['patches'].shape)}, "
                     f"modality_embeddings (B, TotalPatches, ModEmbDim): {tuple(sample['modality_embeddings'].shape)}, "
                     f"position_indices (B, TotalPatches, 3): {tuple(sample['position_indices'].shape)}, "
-                    f"attention_mask (B, TotalPatches): {tuple(sample['attention_mask'].shape)}")
+                    f"pad_mask (B, TotalPatches): {tuple(sample['pad_mask'].shape)}")
 
     return data_loader
 
@@ -104,4 +104,4 @@ if __name__ == "__main__":
         print("patches shape:", batch["patches"].shape)
         print("modality_embeddings shape:", batch["modality_embeddings"].shape)
         print("position_indices shape:", batch["position_indices"].shape)
-        print("attention_mask shape:", batch["attention_mask"].shape)
+        print("pad_mask shape:", batch["pad_mask"].shape)

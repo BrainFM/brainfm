@@ -46,4 +46,3 @@ def unpatchify_3d(x, patch_info):
     x = rearrange(x, 'b m (d h w) (pd ph pw) -> b m (d pd) (h ph) (w pw)', 
                   d=n_pd, h=n_ph, w=n_pw, pd=p_d, ph=p_h, pw=p_w)
     return x
-

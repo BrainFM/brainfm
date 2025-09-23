@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import repeat
+from einops import rearrange, repeat
 from torchinfo import summary
 from typing import NamedTuple
 
@@ -279,6 +279,61 @@ class BrainFM(nn.Module):
                 downstream_head=downstream_head,
             )
         
+    def patchify_from_volumes(self, x):
+        """
+        x: (B, M, D, H, W)
+        Returns:
+            patches: (B, M*n_patches, P) where P = p_d*p_h*p_w
+            n_pd, n_ph, n_pw: ints for grid size
+        """
+        p_d, p_h, p_w = self.patch_size
+        B, M, D, H, W = x.shape
+        assert D % p_d == 0 and H % p_h == 0 and W % p_w == 0, "Input must be divisible by patch_size"
+        n_pd, n_ph, n_pw = D // p_d, H // p_h, W // p_w
+        patches = rearrange(x, 'b m (d pd) (h ph) (w pw) -> b (m d h w) (pd ph pw)', pd=p_d, ph=p_h, pw=p_w)
+        return patches, n_pd, n_ph, n_pw
+
+    def expand_modality_and_positions(self, B, M, n_pd, n_ph, n_pw, modality_embs):
+        """
+        modality_embs: (B, M, EmbDim) or (M, EmbDim) broadcastable to (B, M, EmbDim)
+        Returns:
+            mod_token_embs: (B, M*n_patches, EmbDim)
+            pos_indices:    (B, M*n_patches, 3) with (d,h,w)
+        """
+        L = n_pd * n_ph * n_pw
+        if modality_embs.ndim == 2:
+            modality_embs = modality_embs.unsqueeze(0).expand(B, -1, -1)  # (B, M, E)
+        # repeat each modality embedding L times along the token dimension
+        mod_token_embs = repeat(modality_embs, 'b m e -> b (m l) e', l=L)
+        d = torch.arange(n_pd, device=modality_embs.device)
+        h = torch.arange(n_ph, device=modality_embs.device)
+        w = torch.arange(n_pw, device=modality_embs.device)
+        Dg, Hg, Wg = torch.meshgrid(d, h, w, indexing='ij')  # (n_pd, n_ph, n_pw)
+        pos = torch.stack([Dg, Hg, Wg], dim=-1).reshape(1, L, 3)  # (1, L, 3)
+        pos = repeat(pos, '1 l c -> b (m l) c', b=B, m=M)         # (B, M*L, 3)
+        return mod_token_embs, pos
+
+    def forward_from_volumes(self, images, modality_embs, modality_mask=None, downstream_head=None):
+        """
+        images: (B, M, D, H, W) CPU/GPU float
+        modality_embs: (B, M, Em) or (M, Em)
+        modality_mask: (B, M) bool or None. True=PAD. Used to mask modalities.
+        """
+        patches, n_pd, n_ph, n_pw = self.patchify_from_volumes(images)
+        B = patches.size(0)
+        M = images.size(1)
+        mod_tok, pos_idx = self.expand_modality_and_positions(B, M, n_pd, n_ph, n_pw, modality_embs.to(patches.device))
+        L = n_pd * n_ph * n_pw
+        if modality_mask is None:
+            pad_mask = torch.zeros(B, M * L, dtype=torch.bool, device=patches.device)
+        else:
+            pad_mask = repeat(modality_mask.to(patches.device), 'b m -> b (m l)', l=L)
+        if downstream_head is None:
+            return self.forward(patches, mod_tok, pos_idx, pad_mask)
+        else:
+            return self.forward(patches, mod_tok, pos_idx, pad_mask, downstream_head=downstream_head)
+
+
 def load_model_base():
     return BrainFM(
         img_size=(128, 128, 128),
@@ -349,3 +404,33 @@ if __name__ == "__main__":
             pad_mask=pad_mask,
         )
     print(f"Dummy forward loss: {loss.item():.6f}")
+
+    # Additional dummy run for forward_from_volumes
+    images = torch.randn(2, 3, 128, 128, 128)
+    modality_embs = torch.randn(3, model.modality_embed_dim)
+    with torch.no_grad():
+        loss2 = model.forward_from_volumes(images, modality_embs)
+    print(f"Dummy forward_from_volumes loss: {loss2.item():.6f}")
+
+
+    # Test forward_from_volumes with modality_mask (simulate padding third modality for first sample)
+    modality_mask = torch.zeros(2, 3, dtype=torch.bool)
+    modality_mask[0, 2] = True  # First sample, third modality is PAD
+    with torch.no_grad():
+        loss3 = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
+    print(f"Dummy forward_from_volumes (with modality_mask) loss: {loss3.item():.6f}")
+
+    # ---- Unit test: zero-grad for padded modalities ----
+    model.zero_grad()
+    images = torch.randn(2, 3, 128, 128, 128, requires_grad=True)
+    modality_embs = torch.randn(3, model.modality_embed_dim)
+    modality_mask = torch.zeros(2, 3, dtype=torch.bool)
+    modality_mask[0, 2] = True  # pad 3rd modality for sample 0
+    loss = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
+    loss.backward()
+    grad_pad = images.grad[0, 2]        # (D,H,W) for padded modality
+    grad_keep = images.grad[0, 0]       # compare with a kept modality
+    print("Grad (padded modality) L2:", float(grad_pad.pow(2).sum().sqrt()))
+    print("Grad (kept modality)   L2:", float(grad_keep.pow(2).sum().sqrt()))
+    assert torch.allclose(grad_pad, torch.zeros_like(grad_pad)), "Padded modality should have zero gradients."
+    print("Unit test passed: padded modality receives zero gradient.")

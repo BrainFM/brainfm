@@ -242,12 +242,23 @@ def train_one_epoch(model: torch.nn.Module,
 
         # --- Forward pass ---
         amp_enabled = (use_amp and device.type == 'cuda')
-        amp_ctx = (lambda: nullcontext())
-        if amp_enabled:
-            # torch.amp.autocast requires device_type when enabled
-            amp_ctx = lambda: torch.amp.autocast(device_type='cuda')
-        with amp_ctx():
-            loss = model(**batch)
+        optimizer.zero_grad()
+        if 'images' in batch:
+            images = batch['images']
+            modality_embs = batch['modality_embs']
+            modality_mask = batch.get('modality_mask', None)
+            if amp_enabled:
+                with torch.amp.autocast(device_type='cuda'):
+                    loss = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
+            else:
+                loss = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
+        else:
+            # Legacy path: call model(**batch) in AMP context if enabled
+            if amp_enabled:
+                with torch.amp.autocast(device_type='cuda'):
+                    loss = model(**batch)
+            else:
+                loss = model(**batch)
 
         # Check for NaN/inf loss
         if not math.isfinite(loss.item()):
@@ -255,8 +266,6 @@ def train_one_epoch(model: torch.nn.Module,
             sys.exit(1) # Exit script
 
         # --- Backward Pass & Optimization ---
-        optimizer.zero_grad()
-
         if use_amp:
             scaler.scale(loss).backward()
             if clip_grad_norm is not None:

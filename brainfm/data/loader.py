@@ -1,33 +1,47 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pad_sequence
 from brainfm.utils import Config
 from brainfm.utils import load_json
 from brainfm.models.encoder import build_modality_encoder
 from .dataset import MultiModMRIDataset
 
 def mri_collate_fn(batch):
-    patches_list   = [item['patches'] for item in batch]
-    mod_embs_list  = [item['modality_embeddings'] for item in batch]
-    pos_idxs_list  = [item['position_indices'] for item in batch]
-
-    # Pad sequences
-    # Need batch_first=True for pad_sequence output shape consistency with transformers
-    padded_patches  = pad_sequence(patches_list, batch_first=True, padding_value=0.0)
-    padded_mod_embs = pad_sequence(mod_embs_list, batch_first=True, padding_value=0.0)
-    padded_pos_idxs = pad_sequence(pos_idxs_list, batch_first=True, padding_value=-1) # Use -1 for padding index
-
-    # Create attention mask for Transformer: True indicates **padding** (to be ignored).
-    # Different libraries use different conventions; PyTorch expects True at padded positions.
-    lengths = torch.tensor([len(p) for p in patches_list])
-    max_len = padded_patches.shape[1]
-    pad_mask = torch.arange(max_len)[None, :] >= lengths[:, None] # (B, TotalPatches), True where padded
-
+    """
+    Collate function for batching raw MRI volumes and modality embeddings, padding along the modality dimension.
+    Args:
+        batch: list of dicts, each with keys:
+            - "image": (M, D, H, W)
+            - "modality_embs": (M, E)
+            - "modality_names": list[str]
+    Returns:
+        dict with keys:
+            - "images": (B, M_max, D, H, W)
+            - "modality_embs": (B, M_max, E)
+            - "modality_mask": (B, M_max)  # True = PAD
+            - "modality_names": list of lists of str
+    """
+    import torch
+    B = len(batch)
+    M_max = max(item["image"].shape[0] for item in batch)
+    # Check spatial shape
+    dhw_set = set(tuple(item["image"].shape[1:]) for item in batch)
+    if len(dhw_set) != 1:
+        raise ValueError(f"All spatial shapes must match across batch. Got: {dhw_set}")
+    D, H, W = batch[0]["image"].shape[1:]
+    E = batch[0]["modality_embs"].shape[1]
+    images = torch.zeros(B, M_max, D, H, W, dtype=torch.float32)
+    modality_embs = torch.zeros(B, M_max, E, dtype=torch.float32)
+    modality_mask = torch.ones(B, M_max, dtype=torch.bool)  # True = PAD
+    for b, item in enumerate(batch):
+        M_b = item["image"].shape[0]
+        images[b, :M_b] = item["image"]
+        modality_embs[b, :M_b] = item["modality_embs"]
+        modality_mask[b, :M_b] = False
     return {
-        "patches": padded_patches,
-        "modality_embeddings": padded_mod_embs,
-        "position_indices": padded_pos_idxs,
-        "pad_mask": pad_mask,
+        "images": images,
+        "modality_embs": modality_embs,
+        "modality_mask": modality_mask,
+        "modality_names": [item["modality_names"] for item in batch],
     }
 
 def build_loader(config: Config, logger=None) -> DataLoader: 
@@ -58,10 +72,10 @@ def build_loader(config: Config, logger=None) -> DataLoader:
     # Log dataset size
     if logger:
         sample = next(iter(data_loader))
-        logger.info(f"[Sample Shapes] patches (B, TotalPatches, PatchDim): {tuple(sample['patches'].shape)}, "
-                    f"modality_embeddings (B, TotalPatches, ModEmbDim): {tuple(sample['modality_embeddings'].shape)}, "
-                    f"position_indices (B, TotalPatches, 3): {tuple(sample['position_indices'].shape)}, "
-                    f"pad_mask (B, TotalPatches): {tuple(sample['pad_mask'].shape)}")
+        logger.info(f"[Sample Shapes] images (B, M_max, D, H, W): {tuple(sample['images'].shape)}, "
+                    f"modality_embs (B, M_max, E): {tuple(sample['modality_embs'].shape)}, "
+                    f"modality_mask (B, M_max): {tuple(sample['modality_mask'].shape)}, "
+                    f"modality_names: list[list[str]] with len={len(sample['modality_names'])}")
 
     return data_loader
 
@@ -70,7 +84,7 @@ if __name__ == "__main__":
     import os
     import numpy as np
     import tempfile
-
+    # Build a dataset with two samples, each with two modalities
     with tempfile.TemporaryDirectory() as tmpdir:
         modalities = ['T1', 'T2']
         sample_dict = {}
@@ -82,14 +96,11 @@ if __name__ == "__main__":
                 fpath = os.path.join(tmpdir, f"{sample_id}_{mod}.npy")
                 np.save(fpath, arr)
                 sample_dict[sample_id][mod] = fpath
-
         class DummyEncoder:
             def __call__(self, text: str):
                 return torch.ones(1, 8) * (len(text))  # (1, EmbDim)
-
         modality_encoder = DummyEncoder()
         patch_size = (16, 16, 16)
-
         dataset = MultiModMRIDataset(
             sample_dict=sample_dict,
             modality_encoder=modality_encoder,
@@ -101,7 +112,6 @@ if __name__ == "__main__":
             collate_fn=mri_collate_fn
         )
         batch = next(iter(loader))
-        print("patches shape:", batch["patches"].shape)
-        print("modality_embeddings shape:", batch["modality_embeddings"].shape)
-        print("position_indices shape:", batch["position_indices"].shape)
-        print("pad_mask shape:", batch["pad_mask"].shape)
+        print("images shape:", batch["images"].shape)
+        print("modality_embs shape:", batch["modality_embs"].shape)
+        print("modality_mask shape:", batch["modality_mask"].shape)

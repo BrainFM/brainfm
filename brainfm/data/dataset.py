@@ -3,8 +3,8 @@ import nibabel as nib
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from monai.transforms import Compose, EnsureType, NormalizeIntensity, DivisiblePad
 from brainfm.utils import to_3tuple
-from brainfm.models import patchify_3d
 
 class ModalityEncoderCache:
     """
@@ -47,10 +47,40 @@ def load_npy_dhw(path):
         raise FileNotFoundError(f"File not found: {path}")
     return np.load(path).transpose(2, 0, 1)  # (H, W, D) → (D, H, W)
  
+def make_same_shape(vol, target_shape):
+    """Crop or pad a 3D volume to match target_shape (D, H, W)."""
+    D, H, W = vol.shape
+    target_D, target_H, target_W = target_shape
+    # Crop or pad depth (D)
+    if D > target_D:
+        start = (D - target_D) // 2
+        vol = vol[start:start+target_D, :, :]
+    elif D < target_D:
+        pad_before = (target_D - D) // 2
+        pad_after = target_D - D - pad_before
+        vol = torch.nn.functional.pad(vol, (0, 0, 0, 0, pad_before, pad_after), mode='constant', value=0)
+    # Crop or pad height (H)
+    if H > target_H:
+        start = (H - target_H) // 2
+        vol = vol[:, start:start+target_H, :]
+    elif H < target_H:
+        pad_before = (target_H - H) // 2
+        pad_after = target_H - H - pad_before
+        vol = torch.nn.functional.pad(vol, (0, 0, pad_before, pad_after), mode='constant', value=0)
+    # Crop or pad width (W)
+    if W > target_W:
+        start = (W - target_W) // 2
+        vol = vol[:, :, start:start+target_W]
+    elif W < target_W:
+        pad_before = (target_W - W) // 2
+        pad_after = target_W - W - pad_before
+        vol = torch.nn.functional.pad(vol, (pad_before, pad_after, 0, 0, 0, 0), mode='constant', value=0)
+    return vol
 
-def load_modalities(modality_paths):
+def load_modalities(modality_paths, img_size=(128,128,128)):
     """Load multiple modality volumes from file paths; keys are modality names.
     Returns a dict of {modality: torch.FloatTensor} with shape (D, H, W) on CPU.
+    If img_size is given, each volume is cropped/padded to that shape.
     """
     volumes = {}
     for modality, path in modality_paths.items():
@@ -73,6 +103,10 @@ def load_modalities(modality_paths):
         else:
             raise TypeError(f"Unsupported volume type for {modality}: {type(vol)}")
         
+        # Resize to target shape if specified
+        if img_size is not None:
+            vol = make_same_shape(vol, target_shape=(128, 128, 128))
+
         volumes[modality] = vol
     return volumes
 
@@ -109,28 +143,40 @@ def validate_sample_dict(sample_dict):
 
 class MultiModMRIDataset(Dataset):
     """
-    Dataset for multi-modality 3D MRI that patchifies per modality and attaches:
-      - cached modality text embeddings (computed once via a Hugging Face encoder),
-      - per-patch (d,h,w) indices,
-      - patch grid size for positional embeddings.
-
-    Notes:
-      * Modality embeddings are cached on CPU by default and repeated per patch.
-      * Move tensors to GPU later (e.g., in your training step or collate_fn).
+    Dataset for multi-modality 3D MRI that returns raw stacked volumes and per-modality text embeddings.
+    The dataset always normalizes intensities and pads volumes to be divisible by the patch size.
+    
+    Returns:
+      - image: torch.FloatTensor of shape (M, D, H, W) stacked volumes for M modalities.
+      - modality_names: list of modality names in the order of stacking.
+      - modality_embs: torch.FloatTensor of shape (M, EmbDim) with cached text embeddings.
     """
-    def __init__(self, sample_dict, modality_encoder, patch_size, precompute_modalities: bool = True, cache_device: str = "cpu"):
+    def __init__(self,
+                 sample_dict,
+                 modality_encoder,
+                 patch_size,
+                 img_size=(128,128,128),
+                 precompute_modalities: bool = True,
+                 cache_device: str = "cpu"):
         
         validate_sample_dict(sample_dict)
 
         self.sample_dict = sample_dict
         self.sample_ids  = list(self.sample_dict.keys())
         self.patch_size  = to_3tuple(patch_size)
+        self.img_size    = to_3tuple(img_size)
 
         # Wrap encoder with a cache (embeddings stored on CPU by default)
         self.modality_cache = ModalityEncoderCache(
             modality_encoder,
             cache_device=cache_device
         )
+
+        self.preprocess = Compose([
+            EnsureType(),
+            NormalizeIntensity(nonzero=True, channel_wise=True),
+            DivisiblePad(k=self.patch_size),
+        ])
 
         # Optionally precompute all unique modality names found in the dataset
         if precompute_modalities:
@@ -143,102 +189,21 @@ class MultiModMRIDataset(Dataset):
     def __len__(self):
         return len(self.sample_ids)
 
-    def _generate_position_indices(self, n_pd, n_ph, n_pw):
-        """
-        Create per-patch 3D indices in (d, h, w) order for a regular patch grid.
-
-        Args:
-            n_pd (int): Number of patches along depth.
-            n_ph (int): Number of patches along height.
-            n_pw (int): Number of patches along width.
-
-        Returns:
-            torch.Tensor: Tensor of shape (n_patches, 3) with (d, h, w) integer indices,
-                flattened in row-major order. Aligns with DHW layout used by patchify_3d.
-        """
-        d = torch.arange(n_pd, dtype=torch.long)
-        h = torch.arange(n_ph, dtype=torch.long)
-        w = torch.arange(n_pw, dtype=torch.long)
-        D, H, W = torch.meshgrid(d, h, w, indexing="ij")  # (n_pd, n_ph, n_pw)
-        return torch.stack([D, H, W], dim=-1).reshape(-1, 3)  # (n_patches, 3)
-
-    def _get_modality_embedding(self, mod_name: str, repeat_n: int) -> torch.Tensor:
-        """
-        Fetch a cached modality embedding for `mod_name` (stored on CPU),
-        and repeat it `repeat_n` times to align with patch tokens.
-
-        Returns:
-            torch.Tensor: (repeat_n, EmbDim) on CPU.
-        """
-        emb = self.modality_cache.get(mod_name)          # (EmbDim,)
-        return emb.unsqueeze(0).repeat(repeat_n, 1)      # (N, EmbDim)
-
-    def _process_modality(self, mod_name, volume):
-        """
-        Patchify a single modality volume and build per-patch metadata.
-
-        Args:
-            mod_name (str): Modality name (e.g., 'T1', 'T2', 'FLAIR').
-            volume (torch.Tensor): 3D tensor (D, H, W) in DHW order (already CPU float).
-
-        Returns:
-            tuple:
-                patches (torch.Tensor): (N, PatchDim) flattened patch vectors.
-                modality_embedding (torch.Tensor): (N, EmbDim) repeated embedding per patch.
-                pos_indices (torch.Tensor): (N, 3) integer (d, h, w) patch indices.
-                n_pd (int): Patch grid depth size.
-                n_ph (int): Patch grid height size.
-                n_pw (int): Patch grid width size.
-        """
-        # volume shape (D, H, W) - add batch and modality dim for patchify
-        volume = volume.unsqueeze(0).unsqueeze(0) # (1, 1, D, H, W)
-        patches, patch_info = patchify_3d(volume, self.patch_size)
-        (_, n_pd, n_ph, n_pw, *_ ) = patch_info
-        # patches shape: (1, n_patches, patch_volume) -> (n_patches, patch_volume)
-        patches = patches.squeeze(0)
-
-        modality_embedding = self._get_modality_embedding(mod_name, patches.shape[0])
-
-        pos_indices = self._generate_position_indices(n_pd, n_ph, n_pw)
-
-        return patches, modality_embedding, pos_indices, n_pd, n_ph, n_pw
-
     def __getitem__(self, idx):
         sample_id  = self.sample_ids[idx]
         modality_dict = self.sample_dict[sample_id]
-        modality_volumes = load_modalities(modality_dict)
+        modality_volumes = load_modalities(modality_dict, img_size=self.img_size) # {modality: (D, H, W) tensor}, all modality volume has same img_shape
 
-        all_patches = []
-        all_modality_embeddings = []
-        all_position_indices = [] # List to store (d, h, w) indices for each patch
-
-        max_d, max_h, max_w = 0, 0, 0 # Track max dimensions for pos embedding
-
-        for mod_name, volume in modality_volumes.items():
-            patches, modality_embedding, pos_indices, n_pd, n_ph, n_pw = self._process_modality(mod_name, volume)
-            max_d = max(max_d, n_pd)
-            max_h = max(max_h, n_ph)
-            max_w = max(max_w, n_pw)
-
-            all_patches.append(patches)
-            all_modality_embeddings.append(modality_embedding)
-            all_position_indices.append(pos_indices)
-
-
-        # Concatenate patches and embeddings from all modalities for this sample
-        sample_patches  = torch.cat(all_patches, dim=0)             # (TotalPatches, PatchDim)
-        sample_mod_embs = torch.cat(all_modality_embeddings, dim=0) # (TotalPatches, ModEmbDim)
-        sample_pos_idxs = torch.cat(all_position_indices, dim=0)    # (TotalPatches, 3)
+        # preserve modality order as in modality_dict keys
+        image = torch.stack([modality_volumes[m] for m in modality_dict.keys()], dim=0)  # (M, D, H, W)
+        image = self.preprocess(image)  # apply MONAI transforms on (C=M, D, H, W); MONAI expects channel-first and treats M as channels
+        emb_list = [self.modality_cache.get(m) for m in modality_dict.keys()]
+        modality_embs = torch.stack(emb_list, dim=0)  # (M, EmbDim)
 
         return {
-            "patches"            : sample_patches,
-            "modality_embeddings": sample_mod_embs,
-            "position_indices"   : sample_pos_idxs,
-            "patch_grid_size"    : {
-                "n_pd": max_d,
-                "n_ph": max_h,
-                "n_pw": max_w
-            } # (for positional embedding)
+            "image": image,
+            "modality_names": list(modality_dict.keys()),
+            "modality_embs": modality_embs
         }
     
 if __name__ == "__main__":
@@ -246,8 +211,8 @@ if __name__ == "__main__":
     import numpy as np
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        vol1 = np.random.rand(128, 128, 128).astype(np.float32)
-        vol2 = np.random.rand(128, 128, 128).astype(np.float32)
+        vol1 = np.random.rand(256, 256, 128).astype(np.float32)
+        vol2 = np.random.rand(336, 224, 336).astype(np.float32)
         np.save(f"{tmpdir}/t1.npy", vol1.transpose(1, 2, 0))   # (H, W, D)
         np.save(f"{tmpdir}/t2.npy", vol2.transpose(1, 2, 0))
 
@@ -272,7 +237,5 @@ if __name__ == "__main__":
         )
 
         sample = dataset[0]
-        print("patches:", sample["patches"].shape)
-        print("modality_embeddings:", sample["modality_embeddings"].shape)
-        print("position_indices:", sample["position_indices"].shape)
-        print("patch_grid_size:", sample["patch_grid_size"])
+        print("image:", sample["image"].shape)
+        print("modality_embs:", sample["modality_embs"].shape)

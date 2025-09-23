@@ -8,6 +8,7 @@ import logging
 from collections import defaultdict, deque
 from tqdm import tqdm
 from brainfm.utils import Config
+from contextlib import nullcontext
 
 # For mixed precision
 try:
@@ -15,6 +16,12 @@ try:
     AMP_AVAILABLE = True
 except ImportError:
     AMP_AVAILABLE = False
+
+def _to_device(batch, device: torch.device):
+    """Move tensors in a (possibly nested) batch dict to device safely."""
+    def move(x):
+        return x.to(device, non_blocking=True) if isinstance(x, torch.Tensor) else x
+    return {k: move(v) for k, v in batch.items()}
 
 class SmoothedValue(object):
     """Track values and provide smoothed estimates"""
@@ -124,30 +131,52 @@ class MetricLogger(object):
         end = time.time()
         iter_time = SmoothedValue(fmt='{avg:.4f}')
         data_time = SmoothedValue(fmt='{avg:.4f}')
-        space_fmt = ':' + str(len(str(len(iterable)))) + 'd'
-        log_msg = [
-            header,
-            '[{0' + space_fmt + '}/{1}]',
-            'eta: {eta}',
-            '{meters}',
-            'time: {time}',
-            'data: {data}'
-        ]
+        # Length may be unknown for some iterables
+        total = len(iterable) if hasattr(iterable, "__len__") else None
+        if total is not None:
+            space_fmt = ':' + str(len(str(total))) + 'd'
+            log_msg = [
+                header,
+                '[{0' + space_fmt + '}/{1}]',
+                'eta: {eta}',
+                '{meters}',
+                'time: {time}',
+                'data: {data}'
+            ]
+        else:
+            # No total length known
+            log_msg = [
+                header,
+                '[{0}]',
+                'eta: {eta}',
+                '{meters}',
+                'time: {time}',
+                'data: {data}'
+            ]
         log_msg = self.delimiter.join(log_msg)
         MB = 1024.0 * 1024.0
         for obj in iterable:
             data_time.update(time.time() - end)
             yield obj # Return the object (e.g., batch) for processing
             iter_time.update(time.time() - end)
-            if i % print_freq == 0 or i == len(iterable) - 1:
-                eta_seconds = iter_time.global_avg * (len(iterable) - i)
-                eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+            if i % print_freq == 0 or (total is not None and i == total - 1):
+                if total is not None and i < total:
+                    eta_seconds = iter_time.global_avg * (total - i)
+                    eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+                else:
+                    eta_string = 'N/A'
                 mem_used_gb = torch.cuda.max_memory_allocated() / (MB * 1024) if torch.cuda.is_available() else 0
 
-                log_output = log_msg.format(
-                    i, len(iterable), eta=eta_string,
-                    meters=str(self),
-                    time=str(iter_time), data=str(data_time))
+                if total is not None:
+                    log_output = log_msg.format(
+                        i, total, eta=eta_string,
+                        meters=str(self),
+                        time=str(iter_time), data=str(data_time))
+                else:
+                    log_output = log_msg.format(
+                        i, eta=eta_string,
+                        meters=str(self),
+                        time=str(iter_time), data=str(data_time))
 
                 # Add LR and Memory usage
                 lr = self.meters.get('lr', None)
@@ -161,7 +190,7 @@ class MetricLogger(object):
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         self.logger.info('{} Total time: {} ({:.4f} s / it)'.format(
-            header, total_time_str, total_time / len(iterable)))
+            header, total_time_str, total_time / (total if total else 1)))
 
 
 def save_checkpoint(model, optimizer, epoch, path, scaler=None, extra_info=None):
@@ -201,19 +230,23 @@ def train_one_epoch(model: torch.nn.Module,
 
     # Use tqdm for progress bar if available
     try:
-        from tqdm import tqdm
         data_iterator = tqdm(dataloader, desc=f"Epoch {epoch} Training", leave=False)
-    except ImportError:
-        data_iterator = dataloader # Fallback if tqdm not installed
-        logger.warning("tqdm not found. Progress bar disabled.")
+    except Exception:
+        data_iterator = dataloader  # Fallback if tqdm not installed
+        (logger.warning if logger else print)("tqdm not found. Progress bar disabled.")
 
 
     for batch_idx, batch in enumerate(metric_logger.log_every(data_iterator, log_freq, header)):
-        # Move batch to device
-        batch = {k: v.to(device) for k, v in batch.items()}
+        # Move batch to device (safe: only tensors)
+        batch = _to_device(batch, device)
 
         # --- Forward pass ---
-        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
+        amp_enabled = (use_amp and device.type == 'cuda')
+        amp_ctx = (lambda: nullcontext())
+        if amp_enabled:
+            # torch.amp.autocast requires device_type when enabled
+            amp_ctx = lambda: torch.amp.autocast(device_type='cuda')
+        with amp_ctx():
             loss = model(**batch)
 
         # Check for NaN/inf loss
@@ -247,14 +280,13 @@ def train_one_epoch(model: torch.nn.Module,
         metric_logger.update(lr=current_lr)
 
         # Close tqdm progress bar if used
-        if isinstance(data_iterator, tqdm):
-             data_iterator.set_postfix({"Loss": metric_logger.loss.avg, "LR": current_lr})
-
-
+        if hasattr(data_iterator, "set_postfix"):
+            data_iterator.set_postfix({"Loss": metric_logger.loss.avg, "LR": current_lr})
 
     # Gather stats from all processes if using distributed training (not implemented here)
     #metric_logger.synchronize_between_processes() # Placeholder if needed for DDP
-    logger.info(f"Averaged stats for Epoch {epoch}: {metric_logger}")
+    if logger:
+        logger.info(f"Averaged stats for Epoch {epoch}: {metric_logger}")
 
     return metric_logger.loss.global_avg # Return the average loss for the epoch
 
@@ -317,3 +349,67 @@ def train(model: torch.nn.Module,
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     if logger: logger.info(f'Total training time: {total_time_str}')
     else: print(f'Total training time: {total_time_str}')
+        
+
+
+if __name__ == "__main__":
+    import torch.nn as nn
+    from torch.utils.data import Dataset, DataLoader
+
+    class DummyDataset(Dataset):
+        def __init__(self, num_samples=10, shape=(128,128,128), patch_size=(16,16,16)):
+            self.num_samples = num_samples
+            self.shape = shape
+            self.patch_size = patch_size
+
+        def __len__(self):
+            return self.num_samples
+
+        def __getitem__(self, idx):
+            # Generate a dummy input tensor with shape (channels=1, D, H, W)
+            input_tensor = torch.randn(1, *self.shape)
+            # Generate a dummy target tensor for example (scalar)
+            target = torch.tensor(0.0)
+            return {"x": input_tensor, "target": target}
+
+    class DummyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # Simple conv layer to reduce spatial dims
+            self.conv = nn.Conv3d(1, 1, kernel_size=3, padding=1)
+            self.pool = nn.AdaptiveAvgPool3d(1)
+            self.fc = nn.Linear(1, 1)
+
+        def forward(self, x, target=None):
+            x = self.conv(x)
+            x = torch.relu(x)
+            x = self.pool(x)
+            x = x.view(x.size(0), -1)
+            out = self.fc(x)
+            # Compute dummy loss if target provided
+            if target is not None:
+                loss = (out.squeeze() - target).pow(2).mean()
+                return loss
+            else:
+                # Just return output if no target
+                return out
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = DummyDataset(num_samples=20, shape=(128,128,128), patch_size=(16,16,16))
+    dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+    model = DummyModel().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    # Run one epoch of training on dummy data
+    avg_loss = train_one_epoch(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        epoch=0,
+        device=device,
+        scaler=None,
+        logger=None,
+        log_freq=5,
+        clip_grad_norm=None
+    )
+    print(f"Dummy epoch average loss: {avg_loss:.6f}")

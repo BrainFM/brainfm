@@ -242,40 +242,37 @@ class MultiModMRIDataset(Dataset):
         }
     
 if __name__ == "__main__":
-    # --- Dummy check for MultiModMRIDataset ---
     import tempfile
     import numpy as np
 
-    # Create temporary fake volumes (two modalities, small shape)
-    tmpdir = tempfile.mkdtemp()
-    vol1 = np.random.rand(128, 128, 128).astype(np.float32)
-    vol2 = np.random.rand(128, 128, 128).astype(np.float32)
-    np.save(f"{tmpdir}/t1.npy", vol1.transpose(1, 2, 0))   # (H, W, D)
-    np.save(f"{tmpdir}/t2.npy", vol2.transpose(1, 2, 0))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vol1 = np.random.rand(128, 128, 128).astype(np.float32)
+        vol2 = np.random.rand(128, 128, 128).astype(np.float32)
+        np.save(f"{tmpdir}/t1.npy", vol1.transpose(1, 2, 0))   # (H, W, D)
+        np.save(f"{tmpdir}/t2.npy", vol2.transpose(1, 2, 0))
 
-    # Sample dict: one subject, two modalities
-    sample_dict = {
-        "case001": {
-            "T1": f"{tmpdir}/t1.npy",
-            "T2": f"{tmpdir}/t2.npy",
+        # Sample dict: one subject, two modalities
+        sample_dict = {
+            "case001": {
+                "T1": f"{tmpdir}/t1.npy",
+                "T2": f"{tmpdir}/t2.npy",
+            }
         }
-    }
 
-    # Dummy modality encoder: returns a fixed embedding vector
-    class DummyEncoder:
-        def __call__(self, text: str):
-            return torch.ones(1, 8) * (len(text))  # (1, EmbDim)
+        class DummyEncoder:
+            def __call__(self, text: str):
+                return torch.ones(1, 8) * (len(text))  # (1, EmbDim)
 
-    dataset = MultiModMRIDataset(
-        sample_dict=sample_dict,
-        modality_encoder=DummyEncoder(),
-        patch_size=(16, 16, 16),
-        precompute_modalities=True,
-        cache_device="cpu",
-    )
+        dataset = MultiModMRIDataset(
+            sample_dict=sample_dict,
+            modality_encoder=DummyEncoder(),
+            patch_size=(16, 16, 16),
+            precompute_modalities=True,
+            cache_device="cpu",
+        )
 
-    sample = dataset[0]
-    print("patches:", sample["patches"].shape)
-    print("modality_embeddings:", sample["modality_embeddings"].shape)
-    print("position_indices:", sample["position_indices"].shape)
-    print("patch_grid_size:", sample["patch_grid_size"])
+        sample = dataset[0]
+        print("patches:", sample["patches"].shape)
+        print("modality_embeddings:", sample["modality_embeddings"].shape)
+        print("position_indices:", sample["position_indices"].shape)
+        print("patch_grid_size:", sample["patch_grid_size"])

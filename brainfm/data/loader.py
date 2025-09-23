@@ -6,7 +6,7 @@ from brainfm.utils import load_json
 from brainfm.models.encoder import build_modality_encoder
 from .dataset import MultiModMRIDataset
 
-def mri_collate_fn(batch, device=None):
+def mri_collate_fn(batch):
     patches_list   = [item['patches'] for item in batch]
     mod_embs_list  = [item['modality_embeddings'] for item in batch]
     pos_idxs_list  = [item['position_indices'] for item in batch]
@@ -22,7 +22,6 @@ def mri_collate_fn(batch, device=None):
     lengths = torch.tensor([len(p) for p in patches_list])
     max_len = padded_patches.shape[1]
     attention_mask = torch.arange(max_len)[None, :] >= lengths[:, None] # (B, TotalPatches), True where padded
-
 
     return {
         "patches": padded_patches,
@@ -65,3 +64,44 @@ def build_loader(config: Config, logger=None) -> DataLoader:
                     f"attention_mask (B, TotalPatches): {tuple(sample['attention_mask'].shape)}")
 
     return data_loader
+
+
+if __name__ == "__main__":
+    import os
+    import numpy as np
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        modalities = ['T1', 'T2']
+        sample_dict = {}
+        for i in range(2):
+            sample_id = f"sample{i}"
+            sample_dict[sample_id] = {}
+            for mod in modalities:
+                arr = np.random.rand(128, 128, 128).astype(np.float32)
+                fpath = os.path.join(tmpdir, f"{sample_id}_{mod}.npy")
+                np.save(fpath, arr)
+                sample_dict[sample_id][mod] = fpath
+
+        class DummyEncoder:
+            def __call__(self, text: str):
+                return torch.ones(1, 8) * (len(text))  # (1, EmbDim)
+
+        modality_encoder = DummyEncoder()
+        patch_size = (16, 16, 16)
+
+        dataset = MultiModMRIDataset(
+            sample_dict=sample_dict,
+            modality_encoder=modality_encoder,
+            patch_size=patch_size
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=2,
+            collate_fn=mri_collate_fn
+        )
+        batch = next(iter(loader))
+        print("patches shape:", batch["patches"].shape)
+        print("modality_embeddings shape:", batch["modality_embeddings"].shape)
+        print("position_indices shape:", batch["position_indices"].shape)
+        print("attention_mask shape:", batch["attention_mask"].shape)

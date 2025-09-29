@@ -196,7 +196,8 @@ class MultiModMRIDataset(Dataset):
 
         # preserve modality order as in modality_dict keys
         image = torch.stack([modality_volumes[m] for m in modality_dict.keys()], dim=0)  # (M, D, H, W)
-        image = self.preprocess(image)  # apply MONAI transforms on (C=M, D, H, W); MONAI expects channel-first and treats M as channels
+        image = self.preprocess(image) # apply MONAI transforms on (C=M, D, H, W)
+        image = torch.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0)
         emb_list = [self.modality_cache.get(m) for m in modality_dict.keys()]
         modality_embs = torch.stack(emb_list, dim=0)  # (M, EmbDim)
 

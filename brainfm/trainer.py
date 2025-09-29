@@ -260,10 +260,16 @@ def train_one_epoch(model: torch.nn.Module,
             else:
                 loss = model(**batch)
 
-        # Check for NaN/inf loss
-        if not math.isfinite(loss.item()):
-            logger.error(f"Loss is {loss.item()}, stopping training at epoch {epoch}, batch {batch_idx}")
-            sys.exit(1) # Exit script
+        # Check for NaN/Inf loss
+        if not torch.isfinite(loss):
+            msg = f"Non-finite loss at epoch {epoch}, batch {batch_idx}"
+            if logger: logger.error(msg)
+            else: print(msg)
+            # Dump quick stats
+            imgs = batch.get("images")
+            if imgs is not None:
+                print(f"images stats: min={imgs.min().item():.3g}, max={imgs.max().item():.3g}")
+            raise RuntimeError(msg)
 
         # --- Backward Pass & Optimization ---
         if use_amp:

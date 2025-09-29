@@ -247,6 +247,8 @@ class BrainFM(nn.Module):
         valid_target = patches[loss_mask]
         valid_pred = recon[loss_mask]
         if valid_target.numel() > 0:
+            valid_pred = torch.nan_to_num(valid_pred, nan=0.0, posinf=1e4, neginf=-1e4)
+            valid_target = torch.nan_to_num(valid_target, nan=0.0, posinf=1e4, neginf=-1e4)
             loss = F.mse_loss(valid_pred, valid_target, reduction='mean')
         else:
             loss = torch.tensor(0.0, device=patches.device, requires_grad=True)

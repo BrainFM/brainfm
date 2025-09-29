@@ -10,7 +10,7 @@ def mri_collate_fn(batch):
     Collate function for batching raw MRI volumes and modality embeddings, padding along the modality dimension.
     Args:
         batch: list of dicts, each with keys:
-            - "image": (M, D, H, W)
+            - "images": (M, D, H, W)
             - "modality_embs": (M, E)
             - "modality_names": list[str]
     Returns:
@@ -22,19 +22,19 @@ def mri_collate_fn(batch):
     """
     import torch
     B = len(batch)
-    M_max = max(item["image"].shape[0] for item in batch)
+    M_max = max(item["images"].shape[0] for item in batch)
     # Check spatial shape
-    dhw_set = set(tuple(item["image"].shape[1:]) for item in batch)
+    dhw_set = set(tuple(item["images"].shape[1:]) for item in batch)
     if len(dhw_set) != 1:
         raise ValueError(f"All spatial shapes must match across batch. Got: {dhw_set}")
-    D, H, W = batch[0]["image"].shape[1:]
+    D, H, W = batch[0]["images"].shape[1:]
     E = batch[0]["modality_embs"].shape[1]
     images = torch.zeros(B, M_max, D, H, W, dtype=torch.float32)
     modality_embs = torch.zeros(B, M_max, E, dtype=torch.float32)
     modality_mask = torch.ones(B, M_max, dtype=torch.bool)  # True = PAD
     for b, item in enumerate(batch):
-        M_b = item["image"].shape[0]
-        images[b, :M_b] = item["image"]
+        M_b = item["images"].shape[0]
+        images[b, :M_b] = item["images"]
         modality_embs[b, :M_b] = item["modality_embs"]
         modality_mask[b, :M_b] = False
     return {

@@ -261,7 +261,7 @@ def train_one_epoch(model: torch.nn.Module,
                 loss = model(**batch)
 
         # Check for NaN/Inf loss
-        if not torch.isfinite(loss):
+        if not torch.isfinite(loss).item():
             msg = f"Non-finite loss at epoch {epoch}, batch {batch_idx}"
             if logger: logger.error(msg)
             else: print(msg)

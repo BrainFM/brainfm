@@ -209,6 +209,39 @@ class BrainFM(nn.Module):
             decoder_input_shuffled, dim=1, index=repeat(restore_idx, 'b l -> b l d', d=D)
         )
         return decoder_input_original_order + pos_full
+    
+    def masked_recon_loss(
+        self,
+        patches: torch.Tensor,        # (B, L_full, P)
+        recon: torch.Tensor,          # (B, L_full, P)
+        pad_mask: torch.Tensor,       # (B, L_full) True=PAD
+        mask_map: torch.Tensor,       # (B, L_full) 0=keep, 1=masked (original order)
+        clamp: tuple | None = None    # e.g., (0.0, 1.0) for min-max data; None for z-score
+    ) -> torch.Tensor:
+        """Compute MAE reconstruction loss over masked & non-padded tokens only.
+        - Leaves TARGETS untouched (no bias).
+        - Sanitizes PREDICTIONS to avoid NaN/Inf backprop.
+        - Ignores non-finite elements with an elementwise mask.
+        """
+        is_valid = ~pad_mask                          # (B, L_full)
+        loss_mask = (mask_map == 1) & is_valid        # (B, L_full)
+        if not loss_mask.any():
+            return torch.tensor(0.0, device=patches.device, requires_grad=True)
+
+        target = patches[loss_mask]                   # (N_masked, P)
+        pred   = recon[loss_mask]                     # (N_masked, P)
+
+        # Elementwise finite mask (do NOT modify targets)
+        elem_mask = torch.isfinite(target) & torch.isfinite(pred)
+        if not elem_mask.any():
+            return torch.tensor(0.0, device=patches.device, requires_grad=True)
+
+        # Sanitize predictions
+        pred = torch.nan_to_num(pred, nan=0.0, posinf=1.0, neginf=-1.0)
+        if clamp is not None:
+            pred = torch.clamp(pred, clamp[0], clamp[1])
+
+        return F.mse_loss(pred[elem_mask], target[elem_mask], reduction='mean')
 
 
     def forward_pretraining_step(self, patches, modality_embeddings, position_indices, pad_mask):
@@ -241,17 +274,13 @@ class BrainFM(nn.Module):
         )
 
         # 6. Predict and compute loss on masked, non-padded tokens
-        recon = self.decoder_pred(dec_out)  # (B, L_full, PatchDim)
-        is_valid = ~pad_mask
-        loss_mask = (mask_map == 1) & is_valid
-        valid_target = patches[loss_mask]
-        valid_pred = recon[loss_mask]
-        if valid_target.numel() > 0:
-            valid_pred = torch.nan_to_num(valid_pred, nan=0.0, posinf=1e4, neginf=-1e4)
-            valid_target = torch.nan_to_num(valid_target, nan=0.0, posinf=1e4, neginf=-1e4)
-            loss = F.mse_loss(valid_pred, valid_target, reduction='mean')
-        else:
-            loss = torch.tensor(0.0, device=patches.device, requires_grad=True)
+        recon = self.decoder_pred(dec_out)  # (B, L_full, P)
+        loss = self.masked_recon_loss(
+            patches=patches,
+            recon=recon,
+            pad_mask=pad_mask,
+            mask_map=mask_map,
+            clamp=(0.0, 1.0))  # set None if z-score
         return loss
 
 

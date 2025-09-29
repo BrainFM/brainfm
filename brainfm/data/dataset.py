@@ -1,7 +1,9 @@
 import os
+from typing import Tuple
 import nibabel as nib
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from monai.transforms import Compose, EnsureType, NormalizeIntensity, DivisiblePad
 from brainfm.utils import to_3tuple
@@ -47,34 +49,72 @@ def load_npy_dhw(path):
         raise FileNotFoundError(f"File not found: {path}")
     return np.load(path).transpose(2, 0, 1)  # (H, W, D) → (D, H, W)
  
-def make_same_shape(vol, target_shape):
-    """Crop or pad a 3D volume to match target_shape (D, H, W)."""
+# def make_same_shape(vol, target_shape):
+#     """Crop or pad a 3D volume to match target_shape (D, H, W)."""
+#     D, H, W = vol.shape
+#     target_D, target_H, target_W = target_shape
+#     # Crop or pad depth (D)
+#     if D > target_D:
+#         start = (D - target_D) // 2
+#         vol = vol[start:start+target_D, :, :]
+#     elif D < target_D:
+#         pad_before = (target_D - D) // 2
+#         pad_after = target_D - D - pad_before
+#         vol = torch.nn.functional.pad(vol, (0, 0, 0, 0, pad_before, pad_after), mode='constant', value=0)
+#     # Crop or pad height (H)
+#     if H > target_H:
+#         start = (H - target_H) // 2
+#         vol = vol[:, start:start+target_H, :]
+#     elif H < target_H:
+#         pad_before = (target_H - H) // 2
+#         pad_after = target_H - H - pad_before
+#         vol = torch.nn.functional.pad(vol, (0, 0, pad_before, pad_after), mode='constant', value=0)
+#     # Crop or pad width (W)
+#     if W > target_W:
+#         start = (W - target_W) // 2
+#         vol = vol[:, :, start:start+target_W]
+#     elif W < target_W:
+#         pad_before = (target_W - W) // 2
+#         pad_after = target_W - W - pad_before
+#         vol = torch.nn.functional.pad(vol, (pad_before, pad_after, 0, 0, 0, 0), mode='constant', value=0)
+#     return vol
+
+
+def make_same_shape(vol: torch.Tensor, target_shape: Tuple[int, int, int]) -> torch.Tensor:
+    """
+    Center-crop then pad a 3D tensor to target (D, H, W).
+    Uses a single F.pad call with a 6-tuple: (Wl, Wr, Hl, Hr, Dl, Dr).
+    """
+    assert vol.ndim == 3, f"Expected (D,H,W), got {tuple(vol.shape)}"
+    tD, tH, tW = map(int, target_shape)
     D, H, W = vol.shape
-    target_D, target_H, target_W = target_shape
-    # Crop or pad depth (D)
-    if D > target_D:
-        start = (D - target_D) // 2
-        vol = vol[start:start+target_D, :, :]
-    elif D < target_D:
-        pad_before = (target_D - D) // 2
-        pad_after = target_D - D - pad_before
-        vol = torch.nn.functional.pad(vol, (0, 0, 0, 0, pad_before, pad_after), mode='constant', value=0)
-    # Crop or pad height (H)
-    if H > target_H:
-        start = (H - target_H) // 2
-        vol = vol[:, start:start+target_H, :]
-    elif H < target_H:
-        pad_before = (target_H - H) // 2
-        pad_after = target_H - H - pad_before
-        vol = torch.nn.functional.pad(vol, (0, 0, pad_before, pad_after), mode='constant', value=0)
-    # Crop or pad width (W)
-    if W > target_W:
-        start = (W - target_W) // 2
-        vol = vol[:, :, start:start+target_W]
-    elif W < target_W:
-        pad_before = (target_W - W) // 2
-        pad_after = target_W - W - pad_before
-        vol = torch.nn.functional.pad(vol, (pad_before, pad_after, 0, 0, 0, 0), mode='constant', value=0)
+
+    # 1) Center-crop if larger
+    if D > tD:
+        s = (D - tD) // 2
+        vol = vol[s:s + tD, :, :]
+    if H > tH:
+        s = (H - tH) // 2
+        vol = vol[:, s:s + tH, :]
+    if W > tW:
+        s = (W - tW) // 2
+        vol = vol[:, :, s:s + tW]
+
+    # Update shape after cropping
+    D, H, W = vol.shape
+
+    # 2) Center-pad if smaller (build symmetric pads; put the +1 on the "after" side)
+    pd = max(tD - D, 0)
+    ph = max(tH - H, 0)
+    pw = max(tW - W, 0)
+
+    if pd or ph or pw:
+        pd0 = pd // 2; pd1 = pd - pd0
+        ph0 = ph // 2; ph1 = ph - ph0
+        pw0 = pw // 2; pw1 = pw - pw0
+        # pad = (W_left, W_right, H_left, H_right, D_left, D_right)
+        vol = F.pad(vol, (pw0, pw1, ph0, ph1, pd0, pd1), mode="constant", value=0)
+
     return vol
 
 def load_modalities(modality_paths, img_size=(128,128,128)):
@@ -195,16 +235,28 @@ class MultiModMRIDataset(Dataset):
         modality_volumes = load_modalities(modality_dict, img_size=self.img_size) # {modality: (D, H, W) tensor}, all modality volume has same img_shape
 
         # preserve modality order as in modality_dict keys
-        image = torch.stack([modality_volumes[m] for m in modality_dict.keys()], dim=0)  # (M, D, H, W)
-        image = self.preprocess(image) # apply MONAI transforms on (C=M, D, H, W)
-        image = torch.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0)
-        emb_list = [self.modality_cache.get(m) for m in modality_dict.keys()]
+        images = torch.stack([modality_volumes[m] for m in modality_dict.keys()], dim=0)  # (M, D, H, W)
+        images = self.preprocess(images) # apply MONAI transforms on (C=M, D, H, W)
+
+        # Check for NaN or Inf values
+        bad = ~torch.isfinite(images)
+        if bad.any():
+            # Log once per sample
+            nbad = int(bad.sum().item())
+            print(f"[warn] Non-finite voxels in {sample_id}: {nbad}")
+            # Replace NaN only; keep large but finite values
+            images = torch.nan_to_num(images, nan=0.0)
+            # Clamp extremes to a sane z-score range
+            images = torch.clamp(images, -4.0, 4.0)
+
+        # Get modality embeddings in the same order as modality_dict keys
+        emb_list = [self.modality_cache.get(m) for m in modality_dict.keys()] # list of (EmbDim,) tensors
         modality_embs = torch.stack(emb_list, dim=0)  # (M, EmbDim)
 
         return {
-            "image": image,
-            "modality_names": list(modality_dict.keys()),
-            "modality_embs": modality_embs
+            "images": images, # (M, D, H, W)
+            "modality_names": list(modality_dict.keys()), # list of M strings
+            "modality_embs": modality_embs # (M, EmbDim)
         }
     
 if __name__ == "__main__":
@@ -238,5 +290,5 @@ if __name__ == "__main__":
         )
 
         sample = dataset[0]
-        print("image:", sample["image"].shape)
+        print("image:", sample["images"].shape)
         print("modality_embs:", sample["modality_embs"].shape)

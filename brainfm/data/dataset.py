@@ -105,7 +105,7 @@ def load_modalities(modality_paths, img_size=(128,128,128)):
         
         # Resize to target shape if specified
         if img_size is not None:
-            vol = make_same_shape(vol, target_shape=(128, 128, 128))
+            vol = make_same_shape(vol, target_shape=to_3tuple(img_size))
 
         volumes[modality] = vol
     return volumes

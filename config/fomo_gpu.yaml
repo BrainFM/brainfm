@@ -41,7 +41,7 @@ scheduler:
   gamma: 0.5
 
 train:
-  epochs: 100
+  epochs: 10
   seed: 42
   device: "cuda" # Change to "cuda" if GPU is available
   log_freq: 100

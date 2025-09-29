@@ -1,1 +1,1 @@
-python -m brainfm.cli.pretrain --cfg config/default.yaml --experiment_name test
+python -m brainfm.cli.pretrain --cfg config/fomo_gpu.yaml --experiment_name test

@@ -34,6 +34,7 @@ def create_data_dict_for_fomo(local_dir, remote_dir, output_csv):
             if session == ".DS_Store": continue
             session_dir = os.path.join(subject_dir, session)
             fns = os.listdir(session_dir)
+            if len(fns) == 0: continue
             id_ = f"{dataset_name}/{subject}/{session}"
             data_dict[id_] = {}
             for fn in fns:

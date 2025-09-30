@@ -49,36 +49,6 @@ def load_npy_dhw(path):
         raise FileNotFoundError(f"File not found: {path}")
     return np.load(path).transpose(2, 0, 1)  # (H, W, D) → (D, H, W)
  
-# def make_same_shape(vol, target_shape):
-#     """Crop or pad a 3D volume to match target_shape (D, H, W)."""
-#     D, H, W = vol.shape
-#     target_D, target_H, target_W = target_shape
-#     # Crop or pad depth (D)
-#     if D > target_D:
-#         start = (D - target_D) // 2
-#         vol = vol[start:start+target_D, :, :]
-#     elif D < target_D:
-#         pad_before = (target_D - D) // 2
-#         pad_after = target_D - D - pad_before
-#         vol = torch.nn.functional.pad(vol, (0, 0, 0, 0, pad_before, pad_after), mode='constant', value=0)
-#     # Crop or pad height (H)
-#     if H > target_H:
-#         start = (H - target_H) // 2
-#         vol = vol[:, start:start+target_H, :]
-#     elif H < target_H:
-#         pad_before = (target_H - H) // 2
-#         pad_after = target_H - H - pad_before
-#         vol = torch.nn.functional.pad(vol, (0, 0, pad_before, pad_after), mode='constant', value=0)
-#     # Crop or pad width (W)
-#     if W > target_W:
-#         start = (W - target_W) // 2
-#         vol = vol[:, :, start:start+target_W]
-#     elif W < target_W:
-#         pad_before = (target_W - W) // 2
-#         pad_after = target_W - W - pad_before
-#         vol = torch.nn.functional.pad(vol, (pad_before, pad_after, 0, 0, 0, 0), mode='constant', value=0)
-#     return vol
-
 
 def make_same_shape(vol: torch.Tensor, target_shape: Tuple[int, int, int]) -> torch.Tensor:
     """

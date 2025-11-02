@@ -210,6 +210,7 @@ class BrainFM(nn.Module):
         )
         return decoder_input_original_order + pos_full
     
+
     def masked_recon_loss(
         self,
         patches: torch.Tensor,        # (B, L_full, P)
@@ -289,26 +290,6 @@ class BrainFM(nn.Module):
         x, mod_cond, _ = self.build_input_embeddings(patches, modality_embeddings, position_indices)
         enc_out = self.encoder(x, src_key_padding_mask=pad_mask, cond=mod_cond)
         return downstream_head(enc_out, attention_mask=pad_mask)
-
-
-    def forward(self, patches, modality_embeddings, position_indices, pad_mask, downstream_head=None):
-        # Pre-training
-        if downstream_head is None:
-            return self.forward_pretraining_step(
-                patches=patches,
-                modality_embeddings=modality_embeddings,
-                position_indices=position_indices,
-                pad_mask=pad_mask,
-            )
-        # Fine-tuning
-        else:
-            return self.forward_finetune_step(
-                patches=patches,
-                modality_embeddings=modality_embeddings,
-                position_indices=position_indices,
-                pad_mask=pad_mask,
-                downstream_head=downstream_head,
-            )
         
     def patchify_from_volumes(self, x):
         """
@@ -323,6 +304,7 @@ class BrainFM(nn.Module):
         n_pd, n_ph, n_pw = D // p_d, H // p_h, W // p_w
         patches = rearrange(x, 'b m (d pd) (h ph) (w pw) -> b (m d h w) (pd ph pw)', pd=p_d, ph=p_h, pw=p_w)
         return patches, n_pd, n_ph, n_pw
+
 
     def expand_modality_and_positions(self, B, M, n_pd, n_ph, n_pw, modality_embs):
         """
@@ -344,7 +326,8 @@ class BrainFM(nn.Module):
         pos = repeat(pos, '1 l c -> b (m l) c', b=B, m=M)         # (B, M*L, 3)
         return mod_token_embs, pos
 
-    def forward_from_volumes(self, images, modality_embs, modality_mask=None, downstream_head=None):
+
+    def forward(self, images, modality_embs, modality_mask=None, downstream_head=None):
         """
         images: (B, M, D, H, W) CPU/GPU float
         modality_embs: (B, M, Em) or (M, Em)
@@ -359,10 +342,24 @@ class BrainFM(nn.Module):
             pad_mask = torch.zeros(B, M * L, dtype=torch.bool, device=patches.device)
         else:
             pad_mask = repeat(modality_mask.to(patches.device), 'b m -> b (m l)', l=L)
+
+        # Pre-training
         if downstream_head is None:
-            return self.forward(patches, mod_tok, pos_idx, pad_mask)
+            return self.forward_pretraining_step(
+                patches=patches,
+                modality_embeddings=mod_tok,
+                position_indices=pos_idx,
+                pad_mask=pad_mask,
+            )
+        # Fine-tuning
         else:
-            return self.forward(patches, mod_tok, pos_idx, pad_mask, downstream_head=downstream_head)
+            return self.forward_finetune_step(
+                patches=patches,
+                modality_embeddings=mod_tok,
+                position_indices=pos_idx,
+                pad_mask=pad_mask,
+                downstream_head=downstream_head,
+            )
     
     def extract_features_from_patches(
         self,
@@ -483,7 +480,6 @@ def build_model(config, device: torch.device, logger=None):
     # Load resume checkpoint if specified
     ckpt_path = config.paths.resume_checkpoint_path
     if ckpt_path and os.path.isfile(ckpt_path):
-        print(f"Loading model weights from checkpoint: {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
         if logger:
@@ -507,45 +503,23 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print("Model Summary:")
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
-    print(f"Positional embedding shape: {model.pos_embed.pos_embed.shape}")
-    print(f"Patch dimension (flattened): {model.patch_dim}")
-    print(f"Number of patches per dimension: {model.num_patches_per_dim}")
 
-    B, L = 2, 64  # batch size and number of patches
-    patch_dim = model.patch_dim
-    patches = torch.randn(B, L, patch_dim)
-    modality_embeddings = torch.randn(B, L, model.modality_embed_dim)
-    position_indices = torch.randint(low=0, high=10, size=(B, L, 3))
-    pad_mask = torch.zeros(B, L, dtype=torch.bool)  # no padding
-
-    summary(model)
-
-    with torch.no_grad():
-        loss = model(
-            patches=patches,
-            modality_embeddings=modality_embeddings,
-            position_indices=position_indices,
-            pad_mask=pad_mask,
-        )
-    print(f"Dummy forward loss: {loss.item():.6f}")
-
-    # Additional dummy run for forward_from_volumes
+    # Additional dummy run for forward
     images = torch.randn(2, 3, 128, 128, 128)
     modality_embs = torch.randn(3, model.modality_embed_dim)
     with torch.no_grad():
-        loss2 = model.forward_from_volumes(images, modality_embs)
-    print(f"Dummy forward_from_volumes loss: {loss2.item():.6f}")
+        loss2 = model(images, modality_embs)
+    print(f"Dummy forward loss: {loss2.item():.6f}")
 
 
-    # Test forward_from_volumes with modality_mask (simulate padding third modality for first sample)
+    # Test forward with modality_mask (simulate padding third modality for first sample)
     modality_mask = torch.zeros(2, 3, dtype=torch.bool)
     modality_mask[0, 2] = True  # First sample, third modality is PAD
     with torch.no_grad():
-        loss3 = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
-    print(f"Dummy forward_from_volumes (with modality_mask) loss: {loss3.item():.6f}")
+        loss3 = model(images, modality_embs, modality_mask=modality_mask)
+    print(f"Dummy forward (with modality_mask) loss: {loss3.item():.6f}")
 
     # ---- Unit test: zero-grad for padded modalities ----
     model.zero_grad()
@@ -553,7 +527,7 @@ if __name__ == "__main__":
     modality_embs = torch.randn(3, model.modality_embed_dim)
     modality_mask = torch.zeros(2, 3, dtype=torch.bool)
     modality_mask[0, 2] = True  # pad 3rd modality for sample 0
-    loss = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
+    loss = model.forward(images, modality_embs, modality_mask=modality_mask)
     loss.backward()
     grad_pad = images.grad[0, 2]        # (D,H,W) for padded modality
     grad_keep = images.grad[0, 0]       # compare with a kept modality

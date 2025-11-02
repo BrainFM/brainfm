@@ -249,9 +249,9 @@ def train_one_epoch(model: torch.nn.Module,
             modality_mask = batch.get('modality_mask', None)
             if amp_enabled:
                 with torch.amp.autocast(device_type='cuda'):
-                    loss = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
+                    loss = model(images, modality_embs, modality_mask=modality_mask)
             else:
-                loss = model.forward_from_volumes(images, modality_embs, modality_mask=modality_mask)
+                loss = model(images, modality_embs, modality_mask=modality_mask)
         else:
             # Legacy path: call model(**batch) in AMP context if enabled
             if amp_enabled:

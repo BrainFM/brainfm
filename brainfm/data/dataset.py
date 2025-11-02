@@ -5,7 +5,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-from monai.transforms import Compose, EnsureType, NormalizeIntensity, DivisiblePad
+from monai.transforms import (
+    Compose,
+    EnsureType,
+    NormalizeIntensity,
+    DivisiblePad,
+    RandBiasField,
+    RandGaussianNoise,
+    RandAdjustContrast,
+    RandFlip,
+    RandAffine
+)
 from brainfm.utils import to_3tuple
 
 class ModalityEncoderCache:
@@ -87,6 +97,7 @@ def make_same_shape(vol: torch.Tensor, target_shape: Tuple[int, int, int]) -> to
 
     return vol
 
+
 def load_modalities(modality_paths, img_size=(128,128,128)):
     """Load multiple modality volumes from file paths; keys are modality names.
     Returns a dict of {modality: torch.FloatTensor} with shape (D, H, W) on CPU.
@@ -120,6 +131,7 @@ def load_modalities(modality_paths, img_size=(128,128,128)):
         volumes[modality] = vol
     return volumes
 
+
 def validate_sample_dict(sample_dict):
     """
     Validate the sample_dict for MultiModMRIDataset.
@@ -144,12 +156,19 @@ def validate_sample_dict(sample_dict):
             raise ValueError(f"Value for sample_id '{sample_id}' must be a dict, got {type(modality_dict)}.")
         for mod_name, file_path in modality_dict.items():
             if not isinstance(mod_name, str):
-                raise ValueError(f"Modality name must be a string, got {type(mod_name)} for sample_id '{sample_id}'.")
-            if not os.path.isfile(file_path):
-                raise ValueError(f"File path does not exist for modality '{mod_name}' in sample_id '{sample_id}': {file_path}")
+                raise ValueError(
+                    f"Modality name must be a string, got {type(mod_name)} for sample_id '{sample_id}'."
+                )
             if not isinstance(file_path, str):
-                raise ValueError(f"File path for modality '{mod_name}' in sample_id '{sample_id}' must be a string, got {type(file_path)}.")
+                raise ValueError(
+                    f"File path for modality '{mod_name}' in sample_id '{sample_id}' must be a string, got {type(file_path)}."
+                )
+            if not os.path.isfile(file_path):
+                raise ValueError(
+                    f"File path does not exist for modality '{mod_name}' in sample_id '{sample_id}': {file_path}"
+                )
     return True
+
 
 class MultiModMRIDataset(Dataset):
     """
@@ -184,8 +203,22 @@ class MultiModMRIDataset(Dataset):
 
         self.preprocess = Compose([
             EnsureType(),
+            # patch_size is DHW order, k expects HWD order)
+            DivisiblePad(k=(self.patch_size[1], self.patch_size[2], self.patch_size[0])),
+            # ==== Strong 3D augmentations (expects (C, H, W, D)) ====
+            RandBiasField(prob=0.3, coeff_range=(0.3, 0.6)),
+            RandGaussianNoise(prob=0.3, mean=0.0, std=0.05),
+            RandAdjustContrast(prob=0.3, gamma=(0.7, 1.5)),
+            RandFlip(prob=0.5, spatial_axis=[0, 1, 2]),
+            # ~15 degree rotations around each axis (radians)
+            RandAffine(
+                prob=0.3,
+                rotate_range=(np.pi/12, np.pi/12, np.pi/12),
+                translate_range=None,
+                scale_range=None,
+                padding_mode="border",
+            ),
             NormalizeIntensity(nonzero=True, channel_wise=True),
-            DivisiblePad(k=self.patch_size),
         ])
 
         # Optionally precompute all unique modality names found in the dataset
@@ -205,8 +238,15 @@ class MultiModMRIDataset(Dataset):
         modality_volumes = load_modalities(modality_dict, img_size=self.img_size) # {modality: (D, H, W) tensor}, all modality volume has same img_shape
 
         # preserve modality order as in modality_dict keys
-        images = torch.stack([modality_volumes[m] for m in modality_dict.keys()], dim=0)  # (M, D, H, W)
-        images = self.preprocess(images) # apply MONAI transforms on (C=M, D, H, W)
+        images = torch.stack(
+            [modality_volumes[m] for m in modality_dict.keys()], dim=0
+        )  # (M, D, H, W)
+
+        # MONAI array transforms expect channel-first with spatial order (H, W, D).
+        # Convert (M, D, H, W) -> (M, H, W, D), apply transforms, then convert back.
+        images_chwd = images.permute(0, 2, 3, 1)
+        images_chwd = self.preprocess(images_chwd)
+        images = images_chwd.permute(0, 3, 1, 2)  # back to (M, D, H, W)
 
         # Check for NaN or Inf values
         bad = ~torch.isfinite(images)
@@ -222,6 +262,10 @@ class MultiModMRIDataset(Dataset):
         # Get modality embeddings in the same order as modality_dict keys
         emb_list = [self.modality_cache.get(m) for m in modality_dict.keys()] # list of (EmbDim,) tensors
         modality_embs = torch.stack(emb_list, dim=0)  # (M, EmbDim)
+
+        M, D, H, W = images.shape
+        assert (D, H, W) == self.img_size, f"Got {(D,H,W)} vs {self.img_size}"
+        assert torch.isfinite(images).all(), "Non-finite values in images"
 
         return {
             "images": images, # (M, D, H, W)
@@ -262,3 +306,9 @@ if __name__ == "__main__":
         sample = dataset[0]
         print("image:", sample["images"].shape)
         print("modality_embs:", sample["modality_embs"].shape)
+
+        x = sample["images"]
+        assert x.ndim == 4 and x.shape[0] == 2
+        assert x.shape[1:] == (128,128,128)  # (D,H,W)
+        assert torch.isfinite(x).all()
+        assert sample["modality_embs"].shape == (2, 8)

@@ -4,9 +4,8 @@ paths:
   data_dir: "./data"
   ckpt_dir: "./checkpoint"
   log_dir: "./logs"
-  splits_file: "./splits_10k.json"
-  mapping_file: "./fomo_10k.json"
-  resume_checkpoint_path: "./checkpoint/checkpoint_49.pth"  # resume from 50-epoch checkpoint
+  mapping_file: "./fomo_defined.json"
+  resume_checkpoint_path: null
 
 data:
   img_size: [128, 128, 128]
@@ -26,7 +25,7 @@ model:
 
 optimizer:
   type: "adamw"
-  lr: 5.0e-5 
+  lr: 1.0e-4
   weight_decay: 0.05
   betas: [0.9, 0.999]
   eps: 1.0e-8
@@ -39,6 +38,17 @@ scheduler:
   start_factor: 0.001
   end_factor: 1.0
 
+optimizer:
+  type: "adamw"
+  lr: 1.0e-4       # increased for 8.4K scale
+  weight_decay: 0.05
+scheduler:
+  type: "warmupcosine"
+  max_epochs: 100
+  warmup_epochs: 10
+  min_lr: 1.0e-6
+
+
 train:
   epochs: 10
   seed: 42
@@ -46,4 +56,3 @@ train:
   log_freq: 100
   save_freq: 10
   clip_grad_norm: 1.0
-  fold: 0

@@ -59,7 +59,7 @@ if __name__ == "__main__":
     # FOMO
     local_dir = "/Volumes/BACH2TB/Datasets/FOMO-MRI/fomo-60k"
     remote_dir = "/datastorage/yakov_tmp/FOMO-MRI/fomo-60k"
-    output_csv = "fomo_2k.json"
+    output_csv = "fomo_10k.json"
     create_data_dict_for_fomo(
         local_dir=local_dir,
         remote_dir=remote_dir,

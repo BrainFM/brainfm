@@ -3,13 +3,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from torchinfo import summary
 from typing import NamedTuple
 
-from brainfm.utils import to_3tuple, count_parameters
 from .layer import LearnablePositionalEmbedding3D, ConditionalLayerNorm
 from .encoder import ModalityAdaptedEncoder
 from .decoder import MAEDecoder
+from ..utils import to_3tuple, count_parameters
 
 
 class MaskingOutput(NamedTuple):

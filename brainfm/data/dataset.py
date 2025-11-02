@@ -16,7 +16,7 @@ from monai.transforms import (
     RandFlip,
     RandAffine
 )
-from brainfm.utils import to_3tuple
+from ..utils import to_3tuple
 
 class ModalityEncoderCache:
     """
@@ -47,10 +47,11 @@ class ModalityEncoderCache:
         return emb
 
 def load_nifti(path):
-    """Load a NIfTI file (.nii.gz) and return a NumPy array (D, H, W or vendor default)."""
+    """Load a NIfTI file (.nii.gz) and return a NumPy array (vendor shape) as float32."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"File not found: {path}")
-    return nib.load(path).get_fdata()
+    img = nib.load(path)
+    return img.get_fdata(dtype=np.float32)
 
 
 def load_npy_dhw(path):
@@ -232,45 +233,52 @@ class MultiModMRIDataset(Dataset):
     def __len__(self):
         return len(self.sample_ids)
 
-    def __getitem__(self, idx):
-        sample_id  = self.sample_ids[idx]
-        modality_dict = self.sample_dict[sample_id]
-        modality_volumes = load_modalities(modality_dict, img_size=self.img_size) # {modality: (D, H, W) tensor}, all modality volume has same img_shape
+    def _load_images(self, modality_dict):
+        """Load volumes per modality and stack to (M, D, H, W)."""
+        vols = load_modalities(modality_dict, img_size=self.img_size)
+        images = torch.stack([vols[m] for m in modality_dict.keys()], dim=0)
+        return images  # (M, D, H, W)
 
-        # preserve modality order as in modality_dict keys
-        images = torch.stack(
-            [modality_volumes[m] for m in modality_dict.keys()], dim=0
-        )  # (M, D, H, W)
-
-        # MONAI array transforms expect channel-first with spatial order (H, W, D).
-        # Convert (M, D, H, W) -> (M, H, W, D), apply transforms, then convert back.
-        images_chwd = images.permute(0, 2, 3, 1)
+    def _apply_transforms(self, images: torch.Tensor) -> torch.Tensor:
+        """Apply MONAI transforms: expects (M, D, H, W) -> returns (M, D, H, W)."""
+        images_chwd = images.permute(0, 2, 3, 1)  # (M, H, W, D)
         images_chwd = self.preprocess(images_chwd)
-        images = images_chwd.permute(0, 3, 1, 2)  # back to (M, D, H, W)
+        images = images_chwd.permute(0, 3, 1, 2)  # (M, D, H, W)
+        return images
 
-        # Check for NaN or Inf values
+    def _sanitize(self, images: torch.Tensor, sample_id: str) -> torch.Tensor:
+        """Replace NaNs, clamp outliers; log once per sample if needed."""
         bad = ~torch.isfinite(images)
         if bad.any():
-            # Log once per sample
             nbad = int(bad.sum().item())
             print(f"[warn] Non-finite voxels in {sample_id}: {nbad}")
-            # Replace NaN only; keep large but finite values
             images = torch.nan_to_num(images, nan=0.0)
-            # Clamp extremes to a sane z-score range
             images = torch.clamp(images, -4.0, 4.0)
+        return images
 
-        # Get modality embeddings in the same order as modality_dict keys
-        emb_list = [self.modality_cache.get(m) for m in modality_dict.keys()] # list of (EmbDim,) tensors
-        modality_embs = torch.stack(emb_list, dim=0)  # (M, EmbDim)
+    def _get_modality_embeddings(self, modality_dict) -> torch.Tensor:
+        """Return (M, EmbDim) in the same order as modality_dict keys."""
+        emb_list = [self.modality_cache.get(m) for m in modality_dict.keys()]
+        return torch.stack(emb_list, dim=0)
+
+    def __getitem__(self, idx):
+        sample_id = self.sample_ids[idx]
+        modality_dict = self.sample_dict[sample_id]
+
+        images = self._load_images(modality_dict)           # (M, D, H, W)
+        images = self._apply_transforms(images)             # (M, D, H, W)
+        images = self._sanitize(images, sample_id)          # (M, D, H, W)
+
+        modality_embs = self._get_modality_embeddings(modality_dict)  # (M, EmbDim)
 
         M, D, H, W = images.shape
         assert (D, H, W) == self.img_size, f"Got {(D,H,W)} vs {self.img_size}"
         assert torch.isfinite(images).all(), "Non-finite values in images"
 
         return {
-            "images": images, # (M, D, H, W)
-            "modality_names": list(modality_dict.keys()), # list of M strings
-            "modality_embs": modality_embs # (M, EmbDim)
+            "images": images,                         # (M, D, H, W)
+            "modality_names": list(modality_dict.keys()),
+            "modality_embs": modality_embs,          # (M, EmbDim)
         }
     
 if __name__ == "__main__":
@@ -280,8 +288,8 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmpdir:
         vol1 = np.random.rand(256, 256, 128).astype(np.float32)
         vol2 = np.random.rand(336, 224, 336).astype(np.float32)
-        np.save(f"{tmpdir}/t1.npy", vol1.transpose(1, 2, 0))   # (H, W, D)
-        np.save(f"{tmpdir}/t2.npy", vol2.transpose(1, 2, 0))
+        np.save(f"{tmpdir}/t1.npy", vol1)   # already (H, W, D)
+        np.save(f"{tmpdir}/t2.npy", vol2)
 
         # Sample dict: one subject, two modalities
         sample_dict = {

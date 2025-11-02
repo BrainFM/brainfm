@@ -363,7 +363,102 @@ class BrainFM(nn.Module):
             return self.forward(patches, mod_tok, pos_idx, pad_mask)
         else:
             return self.forward(patches, mod_tok, pos_idx, pad_mask, downstream_head=downstream_head)
+    
+    def extract_features_from_patches(
+        self,
+        patches: torch.Tensor,
+        modality_embeddings: torch.Tensor,
+        position_indices: torch.Tensor,
+        pad_mask: torch.Tensor,
+        return_cls: bool = True
+    ) -> torch.Tensor:
+        """
+        Extract encoder representations similar to the pretraining flow,
+        but without masking or decoding.
 
+        Args:
+            patches (torch.Tensor): Input patch tokens (B, L, P).
+            modality_embeddings (torch.Tensor): Modality embeddings (B, L, Em).
+            position_indices (torch.Tensor): Positional indices per patch (B, L).
+            pad_mask (torch.Tensor): Boolean mask (B, L). True = PAD.
+            return_cls (bool): Return CLS token (True) or mean-pooled features (False).
+
+        Returns:
+            torch.Tensor: Feature tensor of shape (B, D) if return_cls=True,
+                        else (B, D) pooled from all spatial tokens.
+        """
+        self.eval()
+        with torch.no_grad():
+            # --- Step 1. Build input embeddings (same as pretraining) ---
+            x, mod_cond, pos_full = self.build_input_embeddings(
+                patches, modality_embeddings, position_indices
+            )
+
+            # --- Step 2. Encoder forward (no masking applied) ---
+            enc_out = self.encoder(
+                x,
+                src_key_padding_mask=pad_mask,
+                cond=mod_cond
+            )
+
+            # --- Step 3. Return representation ---
+            if return_cls:
+                feats = enc_out[:, 0]                # CLS token
+            else:
+                # Mean-pool all patch tokens (exclude CLS)
+                feats = enc_out[:, 1:].mean(dim=1)
+
+        return feats
+
+
+    def extract_features_from_volumes(
+        self,
+        images: torch.Tensor,
+        modality_embs: torch.Tensor,
+        return_cls: bool = True
+    ) -> torch.Tensor:
+        """
+        High-level feature extraction from full MRI volumes.
+        Converts volumes → patches → encoder features.
+
+        Args:
+            images (torch.Tensor): Input tensor (B, M, D, H, W)
+                where B=batch size, M=modalities.
+            modality_embs (torch.Tensor): Modality embeddings (B, M, Em)
+                or (M, Em) if shared across batch.
+            return_cls (bool): If True, return CLS token per sample;
+                else mean-pool patch tokens.
+
+        Returns:
+            torch.Tensor: Feature tensor of shape (B, D) if return_cls=True,
+                        else (B, D) pooled or (B, N, D) raw tokens.
+        """
+        self.eval()
+        with torch.no_grad():
+            # --- Step 1. Patchify from 3D volumes ---
+            patches, n_pd, n_ph, n_pw = self.patchify_from_volumes(images)
+            B = patches.size(0)
+            M = images.size(1)
+
+            # --- Step 2. Expand modality + positional embeddings ---
+            mod_tok, pos_idx = self.expand_modality_and_positions(
+                B, M, n_pd, n_ph, n_pw, modality_embs.to(patches.device)
+            )
+
+            # --- Step 3. Create dummy pad_mask (no missing modalities assumed) ---
+            L = n_pd * n_ph * n_pw * M
+            pad_mask = torch.zeros(B, L, dtype=torch.bool, device=patches.device)
+
+            # --- Step 4. Call patch-level extractor ---
+            feats = self.extract_features_from_patches(
+                patches=patches,
+                modality_embeddings=mod_tok,
+                position_indices=pos_idx,
+                pad_mask=pad_mask,
+                return_cls=return_cls
+            )
+
+        return feats
 
 def load_model_base():
     return BrainFM(
@@ -378,7 +473,7 @@ def load_model_base():
         decoder_depth=8,
         decoder_nhead=12,
         decoder_ff_dim=1024,
-        mask_ratio=0.75
+        mask_ratio=0.8
     )
 
 def build_model(config, device: torch.device, logger=None):
@@ -388,6 +483,7 @@ def build_model(config, device: torch.device, logger=None):
     # Load resume checkpoint if specified
     ckpt_path = config.paths.resume_checkpoint_path
     if ckpt_path and os.path.isfile(ckpt_path):
+        print(f"Loading model weights from checkpoint: {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
         if logger:

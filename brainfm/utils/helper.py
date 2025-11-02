@@ -40,6 +40,10 @@ def load_json(path: str):
         data = json.load(f)
     return data
 
+def save_json(data: dict, path: str):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
+
 def load_yaml(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"YAML file {path} does not exist.")

@@ -1,0 +1,49 @@
+stage: pretrain
+
+paths:
+  data_dir: "./data"
+  ckpt_dir: "./checkpoint"
+  log_dir: "./logs"
+  splits_file: "./splits_10k.json"
+  mapping_file: "./fomo_10k.json"
+  resume_checkpoint_path: "./checkpoint/checkpoint_49.pth"  # resume from 50-epoch checkpoint
+
+data:
+  img_size: [128, 128, 128]
+  patch_size: [16, 16, 16]
+  batch_size: 4
+  num_workers: 8
+  pin_memory: true
+  modality_encoder_model: "dmis-lab/biobert-v1.1"
+
+model:
+  name: "mae_vit3d_base"
+  in_channels: 1
+  out_channels: 1
+  spatial_dims: 3
+  mask_ratio: 0.78 
+  embed_dim: 768
+
+optimizer:
+  type: "adamw"
+  lr: 5.0e-5 
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+scheduler:
+  type: "warmupcosine"
+  max_epochs: 100
+  warmup_epochs: 10
+  min_lr: 1.0e-6
+  start_factor: 0.001
+  end_factor: 1.0
+
+train:
+  epochs: 10
+  seed: 42
+  device: "cuda" # Change to "cuda" if GPU is available
+  log_freq: 100
+  save_freq: 10
+  clip_grad_norm: 1.0
+  fold: 0

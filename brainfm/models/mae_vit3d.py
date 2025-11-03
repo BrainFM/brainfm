@@ -215,20 +215,25 @@ class BrainFM(nn.Module):
         L_mask = L_full - L_keep
 
         mask_tokens_base = self.mask_token.repeat(B, L_mask, 1)  # (B, L_mask, D)
-        mask_bool = (mask_map == 1)                               # (B, L_full)
+        mask_bool = (mask_map == 1)                              # (B, L_full)
+
         # Invariant: exactly L_mask masked tokens per sample
         assert (mask_bool.sum(dim=1) == L_mask).all(), "mask_map must mark exactly L_mask tokens per sample."
+
         # Column indices of masked tokens in original order
-        masked_idx = torch.nonzero(mask_bool, as_tuple=False)[:, 1].view(B, L_mask)  # (B, L_mask)
+        masked_idx = torch.where(mask_bool)[1].view(B, L_mask)  # (B, L_mask)
         modality_cond_masked_original_order = torch.gather(
             mod_cond_full, dim=1,
             index=repeat(masked_idx, 'b l -> b l d', d=D)
         )  # (B, L_mask, D)
+
         conditioned_mask_tokens = mask_tokens_base + modality_cond_masked_original_order  # (B, L_mask, D)
 
         decoder_input_shuffled = torch.cat([enc_out, conditioned_mask_tokens], dim=1)  # (B, L_full, D)
         decoder_input_original_order = torch.gather(
-            decoder_input_shuffled, dim=1, index=repeat(restore_idx, 'b l -> b l d', d=D)
+            decoder_input_shuffled,
+            dim=1,
+            index=repeat(restore_idx, 'b l -> b l d', d=D)
         )
         return decoder_input_original_order + pos_full
     
@@ -294,10 +299,11 @@ class BrainFM(nn.Module):
         else:
             cov = (z_centered.T @ z_centered) / (B - 1)  # (D, D)
             off_diag = cov - torch.diag(torch.diag(cov))
-            l_cov = (off_diag ** 2).sum() / D
+            num_off = D * (D - 1)
+            l_cov = (off_diag ** 2).sum() / max(1, num_off)
 
         return l_var, l_cov
-
+    
 
     def forward_pretraining_step(self, patches, modality_embeddings, position_indices, pad_mask):
         """Forward pass for MAE pre-training."""
@@ -340,7 +346,7 @@ class BrainFM(nn.Module):
             recon=recon,
             pad_mask=pad_mask,
             mask_map=mask_map,
-            clamp=(0.0, 1.0))  # set None if z-score
+        )
         
         total_loss = loss + reg_loss
         # Store last components for external logging/debugging
@@ -439,7 +445,6 @@ class BrainFM(nn.Module):
         modality_embeddings: torch.Tensor,
         position_indices: torch.Tensor,
         pad_mask: torch.Tensor,
-        return_cls: bool = True
     ) -> torch.Tensor:
         """
         Extract encoder representations similar to the pretraining flow,
@@ -450,11 +455,9 @@ class BrainFM(nn.Module):
             modality_embeddings (torch.Tensor): Modality embeddings (B, L, Em).
             position_indices (torch.Tensor): Positional indices per patch (B, L).
             pad_mask (torch.Tensor): Boolean mask (B, L). True = PAD.
-            return_cls (bool): Return CLS token (True) or mean-pooled features (False).
 
         Returns:
-            torch.Tensor: Feature tensor of shape (B, D) if return_cls=True,
-                        else (B, D) pooled from all spatial tokens.
+            torch.Tensor: Feature tensor of shape (B, D) pooled from all tokens.
         """
         self.eval()
         with torch.no_grad():
@@ -471,11 +474,7 @@ class BrainFM(nn.Module):
             )
 
             # --- Step 3. Return representation ---
-            if return_cls:
-                feats = enc_out[:, 0]                # CLS token
-            else:
-                # Mean-pool all patch tokens (exclude CLS)
-                feats = enc_out[:, 1:].mean(dim=1)
+            feats = enc_out.mean(dim=1)
 
         return feats
 
@@ -484,7 +483,6 @@ class BrainFM(nn.Module):
         self,
         images: torch.Tensor,
         modality_embs: torch.Tensor,
-        return_cls: bool = True
     ) -> torch.Tensor:
         """
         High-level feature extraction from full MRI volumes.
@@ -495,12 +493,9 @@ class BrainFM(nn.Module):
                 where B=batch size, M=modalities.
             modality_embs (torch.Tensor): Modality embeddings (B, M, Em)
                 or (M, Em) if shared across batch.
-            return_cls (bool): If True, return CLS token per sample;
-                else mean-pool patch tokens.
 
         Returns:
-            torch.Tensor: Feature tensor of shape (B, D) if return_cls=True,
-                        else (B, D) pooled or (B, N, D) raw tokens.
+            torch.Tensor: Feature tensor of shape (B, D) pooled from all spatial tokens.
         """
         self.eval()
         with torch.no_grad():
@@ -524,7 +519,6 @@ class BrainFM(nn.Module):
                 modality_embeddings=mod_tok,
                 position_indices=pos_idx,
                 pad_mask=pad_mask,
-                return_cls=return_cls
             )
 
         return feats

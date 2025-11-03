@@ -326,6 +326,10 @@ def train(model: torch.nn.Module,
     # --- Training Loop ---
     start_time = time.time()
     for epoch in range(num_epochs):
+        # --- Set current epoch for loss warm-up ---
+        if hasattr(model, "set_epoch"):
+            model.set_epoch(epoch + 1)
+            
         avg_train_loss = train_one_epoch(
             model=model,
             dataloader=dataloader,

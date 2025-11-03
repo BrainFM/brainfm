@@ -89,6 +89,16 @@ class BrainFM(nn.Module):
         # Projects decoder output back to patch dimension for reconstruction
         self.decoder_pred = nn.Linear(patch_embed_dim, self.patch_dim)
 
+        # --- Regularizer config ---
+        self.lam_var = 0.1
+        self.lam_cov = 0.005
+        self.reg_eps = 1e-4
+        self.warmup_epochs = 5  # linearly scale regularizers for first 5 epochs
+
+        # Tracking utilities
+        self._epoch = 1  # caller should update via set_epoch(); default=1
+        self._last_losses = {}
+
         # --- Initialization ---
         self.initialize_weights()
 
@@ -99,6 +109,19 @@ class BrainFM(nn.Module):
         nn.init.trunc_normal_(self.mask_token, std=.02)
         # Initialize other layers (Linear, LayerNorm)
         self.apply(self._init_weights)
+
+
+    def set_epoch(self, epoch: int) -> None:
+        """Set current epoch (1-indexed) to control regularizer warmup."""
+        self._epoch = int(max(1, epoch))
+
+
+    def _reg_scale(self) -> float:
+        """Linear warmup scale in [0,1] over first `warmup_epochs` epochs."""
+        e = max(0, self._epoch - 1)
+        if self.warmup_epochs <= 0:
+            return 1.0
+        return float(min(1.0, e / self.warmup_epochs))
 
 
     def _init_weights(self, m):
@@ -244,6 +267,38 @@ class BrainFM(nn.Module):
         return F.mse_loss(pred[elem_mask], target[elem_mask], reduction='mean')
 
 
+    def _var_cov_regularizers(self, enc_out: torch.Tensor):
+        """Compute variance and covariance regularizers from encoder outputs.
+
+        Args:
+            enc_out: Tensor of shape (B, L_keep, D) from the encoder.
+
+        Returns:
+            (l_var, l_cov): two scalar tensors.
+        """
+        B, _, D = enc_out.shape
+        # Mean-pool tokens to one feature vector per sample
+        z = enc_out.mean(dim=1)  # (B, D)
+
+        # Center features across the batch
+        z_centered = z - z.mean(dim=0, keepdim=True)
+
+        # Variance penalty: encourage per-dim std >= 1
+        var = z_centered.var(dim=0, unbiased=False)  # (D,)
+        std = torch.sqrt(var + self.reg_eps)
+        l_var = torch.relu(1.0 - std).mean()
+
+        # Covariance penalty: penalize off-diagonal covariance
+        if B <= 1:
+            l_cov = torch.zeros((), device=enc_out.device, dtype=enc_out.dtype)
+        else:
+            cov = (z_centered.T @ z_centered) / (B - 1)  # (D, D)
+            off_diag = cov - torch.diag(torch.diag(cov))
+            l_cov = (off_diag ** 2).sum() / D
+
+        return l_var, l_cov
+
+
     def forward_pretraining_step(self, patches, modality_embeddings, position_indices, pad_mask):
         """Forward pass for MAE pre-training."""
         # 1. Build input embeddings (also get positional embeddings to reuse)
@@ -260,6 +315,11 @@ class BrainFM(nn.Module):
 
         # 3. Encode kept tokens
         enc_out = self.encoder(tokens_kept, src_key_padding_mask=enc_pad_mask, cond=mod_cond_kept)
+
+        # --- Representation regularizers (variance & covariance) ---
+        l_var, l_cov = self._var_cov_regularizers(enc_out)
+        reg_scale = self._reg_scale()
+        reg_loss = reg_scale * (self.lam_var * l_var + self.lam_cov * l_cov)
 
         # 4. Build decoder input (original order)
         dec_in = self.build_decoder_input(enc_out, pos_full, restore_idx, mask_map, mod_cond)
@@ -281,7 +341,20 @@ class BrainFM(nn.Module):
             pad_mask=pad_mask,
             mask_map=mask_map,
             clamp=(0.0, 1.0))  # set None if z-score
-        return loss
+        
+        total_loss = loss + reg_loss
+        # Store last components for external logging/debugging
+        try:
+            self._last_losses = {
+                "mae": float(loss.detach().cpu()),
+                "var": float(l_var.detach().cpu()),
+                "cov": float(l_cov.detach().cpu()),
+                "reg_scale": float(reg_scale),
+                "total": float(total_loss.detach().cpu()),
+            }
+        except Exception:
+            pass
+        return total_loss
 
 
     def forward_finetune_step(self, patches, modality_embeddings, position_indices, pad_mask, downstream_head):
@@ -534,3 +607,5 @@ if __name__ == "__main__":
     print("Grad (kept modality)   L2:", float(grad_keep.pow(2).sum().sqrt()))
     assert torch.allclose(grad_pad, torch.zeros_like(grad_pad)), "Padded modality should have zero gradients."
     print("Unit test passed: padded modality receives zero gradient.")
+
+    print(f"Last losses: {model._last_losses}")

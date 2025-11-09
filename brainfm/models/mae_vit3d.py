@@ -295,35 +295,32 @@ class BrainFM(nn.Module):
 
 
     def _var_cov_regularizers(self, enc_out: torch.Tensor):
-        """Compute variance and covariance regularizers from encoder outputs.
-
+        """Compute variance and covariance regularizers on full token-level features.
         Args:
-            enc_out: Tensor of shape (B, L_keep, D) from the encoder.
-
+            enc_out: (B, L_keep, D) encoder outputs.
         Returns:
-            (l_var, l_cov): two scalar tensors.
+            (l_var, l_cov): scalar tensors.
         """
-        B, _, D = enc_out.shape
+        B, Lk, D = enc_out.shape
+        Z = enc_out.reshape(B * Lk, D).float()  # (N, D) with N = B*Lk
         
-        # Mean-pool tokens to one feature vector per sample
-        z = enc_out.mean(dim=1).float()  # (B, D) in fp32
-
-        # Center features across the batch
-        z_centered = z - z.mean(dim=0, keepdim=True)
-
-        # Variance penalty: encourage per-dim std >= 1
-        var = z_centered.var(dim=0, unbiased=True)  # Bessel
+        # Center features across the sample dimension
+        Zc = Z - Z.mean(dim=0, keepdim=True)
+        
+        # Variance penalty (linear hinge on std): encourage per-dim std >= 1
+        var = Zc.var(dim=0, unbiased=False)  # population estimate (stable for small N)
         std = torch.sqrt(var + self.reg_eps)
         l_var = torch.relu(1.0 - std).mean()
-
-        # Covariance penalty: penalize off-diagonal covariance
-        if B <= 1:
-            l_cov = torch.zeros((), device=enc_out.device, dtype=z.dtype)
+        
+        # Covariance penalty: squared off-diagonals of sample covariance
+        N = Zc.size(0)
+        if N <= 1:
+            l_cov = torch.zeros((), device=enc_out.device, dtype=Z.dtype)
         else:
-            cov = (z_centered.T @ z_centered) / max(1, B - 1) 
-            off = cov - torch.diag(torch.diag(cov)) 
-            l_cov = off.pow(2).sum() / D 
-
+            cov = (Zc.T @ Zc) / max(1, N - 1)  # (D, D)
+            off = cov - torch.diag(torch.diag(cov))
+            l_cov = off.pow(2).sum() / D
+        
         return l_var, l_cov
     
 
@@ -535,7 +532,7 @@ class BrainFM(nn.Module):
                 B, M, n_pd, n_ph, n_pw, modality_embs.to(patches.device)
             )
 
-            # --- Step 3. Create dummy pad_mask (no missing modalities assumed) ---
+            # --- Step 3. Create dummy pad_mask ---
             L = n_pd * n_ph * n_pw * M
             pad_mask = torch.zeros(B, L, dtype=torch.bool, device=patches.device)
 

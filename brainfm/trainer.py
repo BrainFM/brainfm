@@ -18,10 +18,15 @@ except ImportError:
     AMP_AVAILABLE = False
 
 def _to_device(batch, device: torch.device):
-    """Move tensors in a (possibly nested) batch dict to device safely."""
-    def move(x):
-        return x.to(device, non_blocking=True) if isinstance(x, torch.Tensor) else x
-    return {k: move(v) for k, v in batch.items()}
+    """Recursively move tensors in nested containers to device safely."""
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device, non_blocking=True)
+    if isinstance(batch, dict):
+        return {k: _to_device(v, device) for k, v in batch.items()}
+    if isinstance(batch, (list, tuple)):
+        moved = [_to_device(v, device) for v in batch]
+        return type(batch)(moved) if isinstance(batch, tuple) else moved
+    return batch
 
 class SmoothedValue(object):
     """Track values and provide smoothed estimates"""
@@ -40,17 +45,21 @@ class SmoothedValue(object):
 
     @property
     def median(self):
-        d = torch.tensor(list(self.deque))
+        if not self.deque:
+            return 0.0
+        d = torch.tensor(list(self.deque), dtype=torch.float32)
         return d.median().item()
 
     @property
     def avg(self):
+        if not self.deque:
+            return 0.0
         d = torch.tensor(list(self.deque), dtype=torch.float32)
         return d.mean().item()
 
     @property
     def global_avg(self):
-        return self.total / self.count
+        return (self.total / self.count) if self.count > 0 else 0.0
 
     @property
     def value(self):
@@ -209,16 +218,21 @@ def save_checkpoint(model, optimizer, epoch, path, scaler=None, extra_info=None)
     torch.save(checkpoint, path)
 
 
-def train_one_epoch(model: torch.nn.Module,
-                    dataloader: torch.utils.data.DataLoader,
-                    optimizer: torch.optim.Optimizer,
-                    epoch: int,
-                    device: torch.device,
-                    scaler: torch.cuda.amp.GradScaler = None, # For mixed precision
-                    logger: logging.Logger = None,
-                    log_freq: int = 50, # Log every N batches
-                    clip_grad_norm: float = None # Max norm for gradient clipping
-                    ):
+def train_one_epoch(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    device: torch.device,
+    scaler: torch.cuda.amp.GradScaler = None,
+    logger: logging.Logger = None,
+    log_freq: int = 50,
+    clip_grad_norm: float = None,
+    accum_steps: int = 1,
+    start_step: int = 0,
+    total_steps: int | None = None,
+    lr_scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+):
 
     model.train()
     metric_logger = MetricLogger(delimiter="  ", logger=logger)
@@ -228,6 +242,16 @@ def train_one_epoch(model: torch.nn.Module,
     # Check if AMP is available and scaler is provided
     use_amp = AMP_AVAILABLE and scaler is not None
 
+    autocast_ctx = autocast if (use_amp and device.type == 'cuda') else nullcontext
+
+    # Gradient accumulation & step-based schedule setup
+    if accum_steps < 1:
+        accum_steps = 1
+    global_step = start_step
+    if hasattr(model, "set_total_steps") and total_steps is not None:
+        model.set_total_steps(total_steps)
+    optimizer.zero_grad(set_to_none=True)
+
     # Use tqdm for progress bar if available
     try:
         data_iterator = tqdm(dataloader, desc=f"Epoch {epoch} Training", leave=False)
@@ -235,30 +259,36 @@ def train_one_epoch(model: torch.nn.Module,
         data_iterator = dataloader  # Fallback if tqdm not installed
         (logger.warning if logger else print)("tqdm not found. Progress bar disabled.")
 
-
     for batch_idx, batch in enumerate(metric_logger.log_every(data_iterator, log_freq, header)):
         # Move batch to device (safe: only tensors)
         batch = _to_device(batch, device)
 
         # --- Forward pass ---
         amp_enabled = (use_amp and device.type == 'cuda')
-        optimizer.zero_grad()
+
+        # Step-based regularizer schedule: inform the model about current step
+        if hasattr(model, "set_step"):
+            model.set_step(global_step)
+
         if 'images' in batch:
             images = batch['images']
             modality_embs = batch['modality_embs']
             modality_mask = batch.get('modality_mask', None)
             if amp_enabled:
-                with torch.amp.autocast(device_type='cuda'):
+                with autocast_ctx():
                     loss = model(images, modality_embs, modality_mask=modality_mask)
             else:
                 loss = model(images, modality_embs, modality_mask=modality_mask)
         else:
             # Legacy path: call model(**batch) in AMP context if enabled
             if amp_enabled:
-                with torch.amp.autocast(device_type='cuda'):
+                with autocast_ctx():
                     loss = model(**batch)
             else:
                 loss = model(**batch)
+
+        # Normalize loss for gradient accumulation
+        loss_to_backprop = loss / float(accum_steps)
 
         # Check for NaN/Inf loss
         if not torch.isfinite(loss).item():
@@ -273,19 +303,27 @@ def train_one_epoch(model: torch.nn.Module,
 
         # --- Backward Pass & Optimization ---
         if use_amp:
-            scaler.scale(loss).backward()
-            if clip_grad_norm is not None:
-                # Unscale the gradients before clipping
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
+            scaler.scale(loss_to_backprop).backward()
         else:
-            loss.backward()
-            if clip_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
-            optimizer.step()
+            loss_to_backprop.backward()
 
+        do_step = ((batch_idx + 1) % accum_steps == 0) or (batch_idx + 1 == len(dataloader))
+        if do_step:
+            has_grad = any(p.grad is not None for p in model.parameters())
+            if has_grad and clip_grad_norm is not None:
+                if use_amp:
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            # Advance LR scheduler per optimizer update
+            if lr_scheduler is not None:
+                lr_scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            global_step += 1
 
         # --- Logging Metrics ---
         #torch.cuda.synchronize() # Wait for GPU ops to finish for accurate timing if needed
@@ -297,6 +335,7 @@ def train_one_epoch(model: torch.nn.Module,
         # Close tqdm progress bar if used
         if hasattr(data_iterator, "set_postfix"):
             data_iterator.set_postfix({"Loss": metric_logger.loss.avg, "LR": current_lr})
+
 
     # Gather stats from all processes if using distributed training (not implemented here)
     #metric_logger.synchronize_between_processes() # Placeholder if needed for DDP
@@ -319,6 +358,11 @@ def train(model: torch.nn.Module,
     # For older pytorch versions
     scaler = GradScaler() if AMP_AVAILABLE and torch.cuda.is_available() else None
     num_epochs = config.train.epochs
+    steps_per_epoch = len(dataloader)
+    accum_steps = getattr(config.data, 'grad_accum_steps', 1)
+    steps_per_update_epoch = math.ceil(steps_per_epoch / max(1, accum_steps))
+    total_steps = num_epochs * steps_per_update_epoch
+    global_step = 0
 
     if logger: logger.info("Starting training...")
     else: print("Starting training...")
@@ -329,7 +373,7 @@ def train(model: torch.nn.Module,
         # --- Set current epoch for loss warm-up ---
         if hasattr(model, "set_epoch"):
             model.set_epoch(epoch + 1)
-            
+
         avg_train_loss = train_one_epoch(
             model=model,
             dataloader=dataloader,
@@ -339,12 +383,16 @@ def train(model: torch.nn.Module,
             scaler=scaler,
             logger=logger,
             log_freq=config.train.log_freq,
-            clip_grad_norm=config.train.clip_grad_norm
+            clip_grad_norm=config.train.clip_grad_norm,
+            accum_steps=accum_steps,
+            start_step=global_step,
+            total_steps=total_steps,
+            lr_scheduler=lr_scheduler,
         )
+        global_step += steps_per_update_epoch
 
         # Step the scheduler *after* the epoch if it's epoch-based
-        if lr_scheduler is not None:
-            lr_scheduler.step()
+        # (Removed: now stepped per optimizer update in train_one_epoch)
 
         # --- Save Checkpoint ---
         save_freq = config.train.save_freq
@@ -358,10 +406,13 @@ def train(model: torch.nn.Module,
                 epoch=epoch,
                 path=checkpoint_path,
                 scaler=scaler,
-                extra_info={"avg_train_loss": avg_train_loss}
+                extra_info={
+                    "avg_train_loss": avg_train_loss,
+                    "epoch": epoch,
+                    "global_step": global_step,
+                }
             )
             if logger: logger.info(f"Checkpoint saved at {checkpoint_path}")
-
 
     # --- Log Total Training Time ---
     total_time = time.time() - start_time

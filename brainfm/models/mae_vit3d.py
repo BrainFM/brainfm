@@ -89,14 +89,20 @@ class BrainFM(nn.Module):
         # Projects decoder output back to patch dimension for reconstruction
         self.decoder_pred = nn.Linear(patch_embed_dim, self.patch_dim)
 
-        # --- Regularizer config ---
-        self.lam_var = 0.1
-        self.lam_cov = 0.005
+        # --- Regularizer config (step-based schedule) ---
+        self.lam_var = 1.0
+        self.lam_cov = 0.03
         self.reg_eps = 1e-4
-        self.warmup_epochs = 5  # linearly scale regularizers for first 5 epochs
+        # schedule: start after N steps, warmup over K steps, then optional decay
+        self.reg_start_after = 10_000    # steps
+        self.reg_warmup_steps = 4_000    # steps to ramp 0->1
+        self.reg_decay_frac = 0.6        # after 60% of total steps, decay by factor
+        self.reg_decay_mult = 0.7
 
         # Tracking utilities
-        self._epoch = 1  # caller should update via set_epoch(); default=1
+        self._epoch = 1
+        self._step = 0
+        self._total_steps = None
         self._last_losses = {}
 
         # --- Initialization ---
@@ -112,16 +118,32 @@ class BrainFM(nn.Module):
 
 
     def set_epoch(self, epoch: int) -> None:
-        """Set current epoch (1-indexed) to control regularizer warmup."""
+        """Set current epoch (1-indexed) to control regularizer warmup (legacy)."""
         self._epoch = int(max(1, epoch))
 
+    def set_step(self, step: int) -> None:
+        self._step = max(0, int(step))
+
+    def set_total_steps(self, total_steps: int) -> None:
+        self._total_steps = int(max(1, total_steps))
 
     def _reg_scale(self) -> float:
-        """Linear warmup scale in [0,1] over first `warmup_epochs` epochs."""
-        e = max(0, self._epoch - 1)
-        if self.warmup_epochs <= 0:
-            return 1.0
-        return float(min(1.0, e / self.warmup_epochs))
+        """Piecewise schedule in [0,1], controlled by global step.
+        - off before reg_start_after
+        - linear warmup over reg_warmup_steps
+        - optional decay by reg_decay_mult after reg_decay_frac of total steps
+        """
+        s = self._step
+        if s < self.reg_start_after:
+            return 0.0
+        t = s - self.reg_start_after
+        if self.reg_warmup_steps > 0:
+            scale = min(1.0, t / float(self.reg_warmup_steps))
+        else:
+            scale = 1.0
+        if self._total_steps is not None and s > self.reg_decay_frac * self._total_steps:
+            scale *= self.reg_decay_mult
+        return float(scale)
 
 
     def _init_weights(self, m):
@@ -282,25 +304,25 @@ class BrainFM(nn.Module):
             (l_var, l_cov): two scalar tensors.
         """
         B, _, D = enc_out.shape
+        
         # Mean-pool tokens to one feature vector per sample
-        z = enc_out.mean(dim=1)  # (B, D)
+        z = enc_out.mean(dim=1).float()  # (B, D) in fp32
 
         # Center features across the batch
         z_centered = z - z.mean(dim=0, keepdim=True)
 
         # Variance penalty: encourage per-dim std >= 1
-        var = z_centered.var(dim=0, unbiased=False)  # (D,)
+        var = z_centered.var(dim=0, unbiased=True)  # Bessel
         std = torch.sqrt(var + self.reg_eps)
         l_var = torch.relu(1.0 - std).mean()
 
         # Covariance penalty: penalize off-diagonal covariance
         if B <= 1:
-            l_cov = torch.zeros((), device=enc_out.device, dtype=enc_out.dtype)
+            l_cov = torch.zeros((), device=enc_out.device, dtype=z.dtype)
         else:
-            cov = (z_centered.T @ z_centered) / (B - 1)  # (D, D)
-            off_diag = cov - torch.diag(torch.diag(cov))
-            num_off = D * (D - 1)
-            l_cov = (off_diag ** 2).sum() / max(1, num_off)
+            cov = (z_centered.T @ z_centered) / max(1, B - 1) 
+            off = cov - torch.diag(torch.diag(cov)) 
+            l_cov = off.pow(2).sum() / D 
 
         return l_var, l_cov
     
@@ -320,7 +342,11 @@ class BrainFM(nn.Module):
         enc_pad_mask = torch.gather(pad_mask, dim=1, index=keep_idx)
 
         # 3. Encode kept tokens
-        enc_out = self.encoder(tokens_kept, src_key_padding_mask=enc_pad_mask, cond=mod_cond_kept)
+        enc_out = self.encoder(
+            tokens_kept,
+            src_key_padding_mask=enc_pad_mask,
+            cond=mod_cond_kept
+        )
 
         # --- Representation regularizers (variance & covariance) ---
         l_var, l_cov = self._var_cov_regularizers(enc_out)

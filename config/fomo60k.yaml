@@ -1,0 +1,47 @@
+stage: pretrain
+
+paths:
+  data_dir: "./data"
+  ckpt_dir: "./checkpoint/fomo60k/"
+  log_dir: "./logs"
+  mapping_file: "./fomo60k.json"
+  resume_checkpoint_path: null
+
+data:
+  img_size: [128, 128, 128]
+  patch_size: [16, 16, 16]
+  batch_size: 4
+  num_workers: 8
+  pin_memory: true
+  modality_encoder_model: "dmis-lab/biobert-v1.1"
+  grad_accum_steps: 8 
+
+model:
+  name: "mae_vit3d_base"
+  in_channels: 1
+  out_channels: 1
+  spatial_dims: 3
+  embed_dim: 768
+
+optimizer:
+  type: "adamw"
+  lr: 1.0e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+scheduler:
+  type: "warmupcosine"
+  max_epochs: 40   
+  warmup_epochs: 10
+  min_lr: 1.0e-6
+  start_factor: 0.001
+  end_factor: 1.0
+
+train:
+  epochs: 40
+  seed: 42
+  device: "cuda"
+  log_freq: 3000
+  save_freq: 2
+  clip_grad_norm: 1.0
